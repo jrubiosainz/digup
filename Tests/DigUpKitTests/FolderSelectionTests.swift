@@ -133,6 +133,45 @@ import Testing
         #expect(Crawler.crawl([given], options: options).candidates.isEmpty)
     }
 
+    @Test func appCachesAreNotWalkedUnlessChosen() throws {
+        let root = folder.appendingPathComponent("Movies")
+        for path in ["Movies/trip.txt", "Movies/CapCut/User Data/Cache/effect/1/thumb.txt", "Movies/Tool/caches/a.txt"] {
+            let url = folder.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("words".utf8).write(to: url)
+        }
+        let report = Crawler.crawl([root], options: IndexOptions())
+        #expect(report.candidates.map { ($0.path as NSString).lastPathComponent } == ["trip.txt"])
+        #expect(report.skippedFolders["app cache"] == 2)
+        let chosen = Crawler.crawl([root.appendingPathComponent("CapCut/User Data/Cache")], options: IndexOptions())
+        #expect(chosen.candidates.map { ($0.path as NSString).lastPathComponent } == ["thumb.txt"])
+        // In a project, a "cache" folder is its own code: code search walks it.
+        let module = folder.appendingPathComponent("Movies/Tool/caches/lru.py")
+        try Data("x = 1\n".utf8).write(to: module)
+        var code = IndexOptions()
+        code.code = true
+        let codeReport = Crawler.crawl([root], options: code)
+        #expect(codeReport.candidates.contains { $0.path.hasSuffix("/Tool/caches/lru.py") })
+        #expect(codeReport.skippedFolders["app cache"] == nil)
+    }
+
+    @Test func whatChangesInsideAPackageIsNeverWalked() throws {
+        let root = folder.appendingPathComponent("P")
+        for path in ["P/notes.txt", "P/Tool.app/Contents/readme.txt", "P/Tool.app/Contents/Resources/help.txt"] {
+            let url = folder.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("words".utf8).write(to: url)
+        }
+        let names = Crawler.crawl([root], options: IndexOptions()).candidates.map { ($0.path as NSString).lastPathComponent }
+        #expect(names == ["notes.txt"])
+        let app = root.path + "/Tool.app"
+        #expect(!Crawler.isInPackage(root.path + "/notes.txt", below: [root.path]))
+        #expect(Crawler.isInPackage(app, below: [root.path]))
+        #expect(Crawler.isInPackage(app + "/Contents/Resources/help.txt", below: [root.path]))
+        #expect(Crawler.isInPackage(app + "/Contents/gone.txt", below: [root.path]))   // deleted, in a package still there
+        #expect(!Crawler.isInPackage(app + "/Contents/readme.txt", below: [app + "/Contents"]))   // chosen: walked
+    }
+
     @Test func filesUnderNestedFoldersComeOnce() throws {
         let store = try IndexStore(directory: folder.appendingPathComponent("index"))
         try store.insert(Candidate(path: "/D/Media/Courses/a.mp4", kind: .video, size: 1, mtime: 1, inode: 1, device: 1))

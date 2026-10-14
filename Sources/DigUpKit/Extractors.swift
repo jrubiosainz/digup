@@ -50,10 +50,27 @@ enum ImageExtractor {
         guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
         else { throw ExtractError.unreadable("can't decode image") }
         let out = folder.appendingPathComponent(UUID().uuidString + (png ? ".png" : ".jpg"))
-        try write(thumbnail, to: out, png: png)
+        try write(png ? thumbnail : onWhite(thumbnail), to: out, png: png)
         let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any]
         return Prepared(path: out.path, width: width, height: height,
                         taken: exif?[kCGImagePropertyExifDateTimeOriginal] as? String)
+    }
+
+    /// A picture with see-through parts (a logo, an icon), on white as a page shows it: JPEG has no transparency, and
+    /// what's under it is black, which hides a dark logo from the model.
+    static func onWhite(_ image: CGImage) -> CGImage {
+        switch image.alphaInfo {
+        case .none, .noneSkipFirst, .noneSkipLast: return image
+        default: break
+        }
+        let rect = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        guard let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return image }
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(rect)
+        context.draw(image, in: rect)
+        return context.makeImage() ?? image
     }
 
     static func fullImage(_ url: URL) -> CGImage? {

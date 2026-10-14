@@ -15,7 +15,8 @@ import SwiftUI
 ///                             private pasteboard. Keys: down, up, left, right, space, esc, return, cmd+c,
 ///                             cmd+y, cmd+o, cmd+1, cmd+2, cmd+comma and letters; `settings`, `window` and `panel`
 ///                             open those, `wait` waits. Each goes to the window that has the keyboard. With
-///                             -debugWindow search they test the window instead.
+///                             -debugWindow search they test the window instead. With -debugSnapshot, the panel
+///                             is drawn again once they're done, into <png stem>.keys.png.
 ///     -debugType "a|b c"      then type each query (|-separated) into the field, one key every
 ///                             `-debugTypeInterval` seconds (default 0.09), waiting for its final results; the panel
 ///                             logs how long after the last keystroke they arrived
@@ -198,7 +199,7 @@ enum DebugHooks {
             $0.trimmingCharacters(in: .whitespaces)
         } ?? []
         if !keys.isEmpty {
-            panel.pasteboard = NSPasteboard(name: NSPasteboard.Name("com.abdurrahim.DigUp.debug"))
+            panel.pasteboard = NSPasteboard(name: NSPasteboard.Name("com.jrubiosainz.Biblo.debug"))
             panel.pasteboard.clearContents()
         }
         let typed = defaults.string(forKey: "debugType")?.split(separator: "|").map(String.init) ?? []
@@ -221,8 +222,12 @@ enum DebugHooks {
                     openSelected(row, app) {
                         quickLook(row, panel: panel, snapshot: snapshotPath("quicklook")) {
                             press(keys, app, describe: { panelState(panel) }) {
-                                type(typed, in: panel, every: interval) {
-                                    reshow(panel, times: defaults.integer(forKey: "debugReshow"), then: done)
+                                afterKeys(panel, snapshot: keys.isEmpty ? nil : snapshot.map {
+                                    $0.deletingPathExtension().appendingPathExtension("keys.png")
+                                }) {
+                                    type(typed, in: panel, every: interval) {
+                                        reshow(panel, times: defaults.integer(forKey: "debugReshow"), then: done)
+                                    }
                                 }
                             }
                         }
@@ -232,6 +237,17 @@ enum DebugHooks {
         }
         panel.show()
         panel.query = text
+    }
+
+    /// With `-debugKeys`: once the arrows' lens and scroll have settled, the panel again (`<snapshot>.keys.png`).
+    private static func afterKeys(_ panel: SearchPanelController, snapshot: URL?, then done: @escaping () -> Void) {
+        guard let snapshot else { return done() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            whenPicturesSettle {
+                save("panel after keys", { try panel.snapshot(to: $0) }, to: snapshot)
+                done()
+            }
+        }
     }
 
     /// `-debugPlay`: plays `row` from its moment, muted, and logs where playback is 1.5 s later.
@@ -553,15 +569,14 @@ enum DebugHooks {
         }
     }
 
-    /// The panel's state, for key tests.
+    /// The panel's state, for key tests: the column the arrows are in, and where in it.
     private static func panelState(_ panel: SearchPanelController) -> String {
-        let ids = panel.rowIDs
-        let index = ids.firstIndex { $0 == panel.selection }.map { "\($0 + 1)" } ?? "-"
+        let column = panel.focusedColumn
+        let index = column?.rows.firstIndex { $0.id == panel.selection }.map { "\($0 + 1)" } ?? "-"
         let copied = panel.pasteboard.readObjects(forClasses: [NSURL.self])?.first as? URL
-        let selected = panel.selection == SearchPanelController.weakerToggle ? "the weaker-matches fold"
-            : panel.selectedRow?.name ?? "none"
-        return "row \(index) of \(ids.count) (\(selected)) · weaker \(panel.showWeaker ? "shown" : "folded") · "
-            + "query \"\(panel.query)\" · panel \(panel.isVisible ? "open" : "hidden") · "
+        let selected = panel.selectedRow.map { "\($0.name), \($0.percent) %" } ?? "none"
+        return "column \(column?.kind.spanishTitle ?? "none") · row \(index) of \(column?.rows.count ?? 0) "
+            + "(\(selected)) · query \"\(panel.query)\" · panel \(panel.isVisible ? "open" : "hidden") · "
             + "Quick Look \(panel.isPreviewing ? "open" : "closed")"
             + (copied.map { " · pasteboard: \($0.lastPathComponent)" } ?? "")
     }
@@ -611,8 +626,9 @@ enum DebugHooks {
             "down": (125, "\u{F701}", []), "up": (126, "\u{F700}", []), "space": (49, " ", []),
             "esc": (53, "\u{1B}", []), "return": (36, "\r", []), "cmd+c": (8, "c", .command),
             "cmd+y": (16, "y", .command), "left": (123, "\u{F702}", []), "right": (124, "\u{F703}", []),
-            "cmd+1": (18, "1", .command), "cmd+2": (19, "2", .command), "cmd+o": (31, "o", .command),
-            "cmd+comma": (43, ",", .command),
+            "cmd+1": (18, "1", .command), "cmd+2": (19, "2", .command), "cmd+3": (20, "3", .command),
+            "cmd+4": (21, "4", .command), "cmd+5": (23, "5", .command), "cmd+o": (31, "o", .command),
+            "cmd+comma": (43, ",", .command), "tab": (48, "\t", []), "shift+tab": (48, "\u{19}", .shift),
         ]
         var entry = table[name]
         if entry == nil, name.count == 1, let code = letterCodes[name] { entry = (code, name, []) }

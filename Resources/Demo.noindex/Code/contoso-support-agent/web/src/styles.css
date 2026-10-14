@@ -1,0 +1,354 @@
+:root {
+  --pine: #1f4d3a;
+  --sun: #f2c14e;
+  --ink: #1f2a24;
+  --muted: #6b7280;
+  --paper: #f6f5f1;
+  --line: #e7e5df;
+  --stone: #d9d4c7;
+  color: var(--ink);
+  background: var(--paper);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.app {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The top bar. The mark is a tent with its door open, drawn with borders. */
+.top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 68px;
+  padding: 0 36px;
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+}
+
+.mark {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--pine);
+  overflow: hidden;
+}
+
+.mark::before,
+.mark::after {
+  content: "";
+  position: absolute;
+  bottom: 7px;
+}
+
+.mark::before {
+  left: 5px;
+  border-left: 12px solid transparent;
+  border-right: 12px solid transparent;
+  border-bottom: 17px solid var(--sun);
+}
+
+.mark::after {
+  left: 13px;
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-bottom: 12px solid #fff;
+}
+
+.brand {
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.brand small {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+
+.pill {
+  margin-left: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #e8f2ec;
+  color: var(--pine);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.note {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* The conversation: newest at the bottom, 760 px wide at most. */
+.thread {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+  padding: 24px max(16px, calc((100% - 760px) / 2)) 18px;
+}
+
+.thread > :first-child {
+  margin-top: auto;
+}
+
+.msg {
+  max-width: 600px;
+  padding: 14px 18px;
+  border-radius: 18px;
+  font-size: 15.5px;
+  line-height: 1.5;
+}
+
+.msg p {
+  margin: 0;
+}
+
+.msg p + p {
+  margin-top: 0.8em;
+}
+
+.msg.user {
+  align-self: flex-end;
+  background: var(--pine);
+  color: #fff;
+  border-bottom-right-radius: 6px;
+  white-space: pre-wrap;
+}
+
+.msg.agent {
+  align-self: flex-start;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-bottom-left-radius: 6px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 4%);
+}
+
+.who {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--pine);
+}
+
+.who::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2f9e6a;
+}
+
+.cites {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.cite {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: #f4f1ea;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #5b5446;
+}
+
+.cite::before {
+  content: "";
+  width: 10px;
+  height: 13px;
+  border: 1.5px solid #8a7f68;
+  border-radius: 2px;
+  background: #fff;
+}
+
+/* A tool the agent called. Dots while it runs. */
+.tool {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 12px;
+  border: 1px solid #dfe5ff;
+  border-radius: 10px;
+  background: #eef2ff;
+  font: 600 13px "SF Mono", Menlo, Consolas, monospace;
+  color: #3f3fb0;
+}
+
+.tool::before {
+  content: "ƒ";
+  font: italic 700 15px Georgia, serif;
+  color: #5b5bd6;
+}
+
+.tool span {
+  font-weight: 500;
+  color: #6b6bb8;
+}
+
+.tool.running::after {
+  content: "• • •";
+  letter-spacing: 2px;
+  color: #9a9ae0;
+}
+
+.typing {
+  align-self: flex-start;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: #9aa39d;
+}
+
+.tool.running::after,
+.typing {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.chip {
+  padding: 8px 14px;
+  border: 1px solid var(--stone);
+  border-radius: 999px;
+  background: #fff;
+  font: 600 13.5px system-ui, sans-serif;
+  color: #3d463f;
+  cursor: pointer;
+}
+
+.chip:hover:not(:disabled) {
+  border-color: var(--pine);
+  color: var(--pine);
+}
+
+.chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.person {
+  align-self: flex-start;
+}
+
+.notice {
+  align-self: center;
+  max-width: 600px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.composer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(760px, 100% - 32px);
+  height: 56px;
+  margin: 0 auto 26px;
+  padding: 0 10px 0 20px;
+  border: 1px solid #dcd8cd;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgb(31 42 36 / 6%);
+}
+
+.composer:focus-within {
+  border-color: var(--pine);
+}
+
+.composer input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  font: 15.5px system-ui, sans-serif;
+  color: var(--ink);
+}
+
+.composer input::placeholder {
+  color: #9ca3af;
+}
+
+.send {
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--stone);
+  color: #fff;
+  font: 700 18px system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.send:disabled {
+  cursor: default;
+}
+
+.composer.typed .send:not(:disabled) {
+  background: var(--pine);
+}
+
+@media (max-width: 640px) {
+  .top {
+    padding: 0 16px;
+  }
+
+  .note {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool.running::after,
+  .typing {
+    animation: none;
+  }
+}

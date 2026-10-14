@@ -24,6 +24,7 @@ final class AppModel {
     var statusLine: String {
         let status = self.status
         guard hasFolders else { return "No folders chosen yet" }
+        if let folder = status.opening { return "Waiting for access to \((folder as NSString).lastPathComponent)" }
         switch status.activity {
         case .starting: return "Starting…"
         case .failed(let problem): return "⚠︎ \(problem)"

@@ -1,3 +1,30 @@
+> [!NOTE]
+> **Biblo** es un fork personal de [DigUp](https://github.com/ARahim3/DigUp) (MIT, © 2026 Abdur Rahim).
+>
+> - **Qué cambia:** usa el mismo motor (EmbeddingGemma 2 sobre llama.cpp, índice en SQLite) con un panel nuevo en
+>   español y un aspecto propio: violetas de Microsoft Foundry sobre un degradado suave, la lupa en un disco violeta a
+>   la derecha de la barra y una invitación a buscar, «¿Qué quieres encontrar?», en lugar del lema de DigUp. Hay una
+>   columna por formato, ordenada por acierto, y una lupa que abre en grande el resultado en el que estás. Diseño en
+>   [DESIGN.md](DESIGN.md); producto en [PRODUCT.md](PRODUCT.md).
+> - **Compilar:** `scripts/build-llama.sh` una vez y después `./build.sh`, con Xcode como herramientas activas. El
+>   resultado queda en `build.noindex/Biblo.app`.
+> - **Instalar:** `scripts/install.sh` la copia en `/Applications` y la abre; repítelo tras cada compilación. Biblo
+>   tiene icono fijo en el Dock, que abre la ventana grande. Elige las carpetas y pulsa ⇧⌘Espacio desde cualquier app.
+> - **Probar sin tocar tus carpetas:** `scripts/dev-run.sh` usa la carpeta sintética `~/BibloTestbed` y un índice
+>   aparte en `.dev/`.
+> - **Modo demo, para grabarla o enseñarla:** Ajustes → General → Modo demo. Biblo copia unos archivos de muestra a
+>   `~/Biblo Demo` y busca solo en ellos, con un índice aparte; al apagarlo vuelve a tus carpetas y a tu índice. Son
+>   documentos, diapositivas, imágenes, capturas, audio, vídeo y código sobre Microsoft Foundry, Fabric y Copilot,
+>   con datos públicos, empresas ficticias y cifras inventadas. Están en `Resources/Demo.noindex`, que `./build.sh`
+>   mete en la app. En git solo van los textos y el código escritos a mano, porque las condiciones de los logos de
+>   Microsoft y GitHub y la licencia de las voces de macOS limitan republicar lo demás. Eso lo genera
+>   `scripts/make-demo.sh`, que necesita ffmpeg, Edge o Chrome y los logos oficiales (se descargan como indica
+>   `scripts/demo/assets/SOURCES.md`). Los logos aparecen sin alterar, como piden sus guías de marca: revísalas antes
+>   de publicar.
+> - **Datos:** índice y modelo en `~/Library/Application Support/Biblo`. Nada sale del Mac.
+>
+> Lo que sigue es el README original de DigUp, en inglés.
+
 <p align="center"><img src="docs/logo.png" width="96" alt=""></p>
 
 <h1 align="center">DigUp</h1>
@@ -78,8 +105,9 @@ Only the folders you choose:
 
 Outside the folders you pick for code search, it never reads code, and inside a code project (a folder with `.git`,
 `package.json` and the like) it reads only screenshots. It never reads keys, certificates, password files, hidden
-folders like `~/.ssh`, app bundles or caches. It skips folders that look like datasets, and never downloads iCloud
-files that only live in the cloud. You can skip more folders or file types in Settings. DigUp only reads your files;
+folders like `~/.ssh`, app bundles or caches. It skips folders that look like datasets, and never downloads files that
+only live in the cloud (iCloud, OneDrive and other file providers). You can skip more folders or file types in
+Settings. DigUp only reads your files;
 it never changes, moves or uploads them.
 
 The first pass takes a few minutes for a few hundred files and can take an hour for a big Downloads folder. That

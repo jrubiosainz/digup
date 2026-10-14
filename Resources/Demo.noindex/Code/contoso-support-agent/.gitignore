@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.azure/
+.env
+
+web/node_modules/
+web/dist/
+
+# Real customer conversations never leave the eval workspace.
+evals/golden.jsonl

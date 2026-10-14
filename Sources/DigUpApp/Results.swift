@@ -22,9 +22,12 @@ struct ResultRow: Identifiable, Equatable {
     let info: [String: String]
     /// The query's words (`Searcher.terms`): what the preview highlights on a page or in a passage.
     let terms: [String]
+    /// The engine's fused score (`SearchHit.score`), what results are ordered by.
+    let score: Double
 
     init(_ hit: SearchHit, terms: [String] = []) {
         id = hit.path
+        score = hit.score
         url = URL(fileURLWithPath: hit.path)
         name = url.lastPathComponent
         // Code says where it is in its repo: "billing/payments".
@@ -41,7 +44,7 @@ struct ResultRow: Identifiable, Equatable {
         locEnd = hit.locEnd
         focus = hit.focus
         excerpt = hit.excerpt.flatMap { $0.isEmpty ? nil : $0 }
-        matchedMeaning = (hit.z ?? 0) >= 2
+        matchedMeaning = hit.byMeaning
         matchedWords = hit.keywordRank != nil
         modified = Date(timeIntervalSince1970: hit.modified)
         size = hit.size
@@ -65,10 +68,14 @@ struct ResultRow: Identifiable, Equatable {
         return words
     }
 
-    /// The page or moment that matched, as a badge: "p. 3", "0:06", "♪ 0:25" (a video's sound), "L12–40" (code).
+    /// A PowerPoint deck: its chunks are slides, and its `pageImage`s pictures on them.
+    var isDeck: Bool { kind == .doc && SlideExtractor.isDeck(url.path) }
+
+    /// The page or moment that matched, as a badge: "p. 3", "slide 2", "0:06", "♪ 0:25" (a video's sound), "L12–40" (code).
     var place: String? {
         guard let loc else { return nil }
         switch segment {
+        case .chunk where isDeck, .pageImage where isDeck: return "slide \(Int(loc))"
         case .page, .pageImage: return "p. \(Int(loc))"
         case .frame: return Self.clock(loc)
         case .audio: return kind == .video ? "♪ \(Self.clock(loc))" : Self.clock(loc)
@@ -105,7 +112,9 @@ struct ResultRow: Identifiable, Equatable {
         case .frame: return "Matches the frame at \(place)"
         case .audio: return kind == .video ? "Matches the sound at \(place)" : "Matches what's heard at \(place)"
         case .page: return "Matches the text on \(page)"
+        case .pageImage where isDeck: return "Matches a picture on slide \(loc.map { Int($0) } ?? 1)"
         case .pageImage: return "Matches \(page)"
+        case .chunk where isDeck: return "Matches slide \(loc.map { Int($0) } ?? 1)"
         case .chunk: return "Matches its text"
         case .name: return "Matches its name"
         case .lines, .cells: return "Matches \(span ?? "the code")"
@@ -132,6 +141,8 @@ struct ResultRow: Identifiable, Equatable {
         let readTo = info["read_to"].flatMap(Int.init)
         if let pages = info["pages"].flatMap(Int.init) {
             parts.append((pages == 1 ? "1 page" : "\(pages) pages") + (readTo.map { ", \($0) read so far" } ?? ""))
+        } else if let slides = info["slides"].flatMap(Int.init) {
+            parts.append((slides == 1 ? "1 slide" : "\(slides) slides") + (readTo.map { ", \($0) read so far" } ?? ""))
         } else if readTo != nil {
             parts.append("partly read so far")
         }
@@ -201,6 +212,16 @@ enum ResultGroupKind: CaseIterable {
     }
 }
 
+/// One format's column in the panel: all its results, best first; the first `strong` are strong matches, the rest
+/// weaker ones (below half the best score).
+struct ResultColumn: Identifiable, Equatable {
+    let kind: ResultGroupKind
+    let rows: [ResultRow]
+    let strong: Int
+    var id: ResultGroupKind { kind }
+    var isEmpty: Bool { rows.isEmpty }
+}
+
 struct ResultGroup: Identifiable, Equatable {
     let kind: ResultGroupKind
     let rows: [ResultRow]
@@ -216,12 +237,16 @@ struct ResultSet: Equatable {
     /// The strong ones in score order (the window's grid; the panel shows `groups`).
     var ranked: [ResultRow] = []
     var weaker: [ResultRow] = []
+    /// The panel's columns: every format in a fixed order, so each keeps its place (and its ⌘ number) from one search
+    /// to the next, with its results best first and the weaker ones last. A search of code has one column.
+    var columns: [ResultColumn] = []
 
     static let empty = ResultSet()
+    static let columnOrder: [ResultGroupKind] = [.documents, .screenshots, .images, .video, .audio]
 
     init() {}
 
-    init(_ hits: [SearchHit], query: String = "", rowsPerGroup: Int = .max) {
+    init(_ hits: [SearchHit], query: String = "", rowsPerGroup: Int = .max, code: Bool = false) {
         let strong = Searcher.strongCount(hits)
         let terms = Searcher.terms(query)
         var order: [ResultGroupKind] = []
@@ -236,6 +261,12 @@ struct ResultSet: Equatable {
             ResultGroup(kind: $0, rows: Array(byGroup[$0]!.prefix(rowsPerGroup)), total: byGroup[$0]!.count)
         }
         weaker = hits.dropFirst(strong).map { ResultRow($0, terms: terms) }
+        // Hits come best first, so each format's share of them is too.
+        let all = ranked + weaker
+        columns = (code ? [.code] : Self.columnOrder).map { kind in
+            ResultColumn(kind: kind, rows: all.filter { ResultGroupKind($0.kind) == kind },
+                         strong: ranked.count { ResultGroupKind($0.kind) == kind })
+        }
     }
 
     var strongRows: [ResultRow] { groups.flatMap(\.rows) }
@@ -265,6 +296,132 @@ extension FileKind {
         case .audio: "waveform"
         case .video: "film"
         case .code: "chevron.left.forwardslash.chevron.right"
+        }
+    }
+}
+
+// MARK: Biblo's panel: how sure a match is, and its words in Spanish
+
+extension ResultRow {
+    /// How likely this is what you're after, estimated from the engine's score with a logistic curve centered just
+    /// past where a meaning match clears the gate (score 2 → 39 %, 3 → 61 %, 4 → 79 %, 6 → 96 %). It only rescales
+    /// the score, so it orders results exactly as the engine does: a reading aid, not a calibrated probability.
+    var confidence: Double { 1 / (1 + exp(-0.9 * (score - 2.5))) }
+
+    /// `confidence` as a whole percentage, never 100: nothing found by description is certain.
+    var percent: Int { min(99, max(1, Int((confidence * 100).rounded()))) }
+
+    static let spanish = Locale(identifier: "es_ES")
+
+    /// `reason`, as the panel says it: "Por el fotograma de 0:06".
+    var spanishReason: String {
+        guard matchedMeaning else { return matchedWords ? "Tiene tus palabras" : "Por su nombre" }
+        let place = loc.map(Self.clock) ?? ""
+        let page = loc.map { "la página \(Int($0))" } ?? "una página"
+        switch segment {
+        case .image: return kind == .screenshot ? "Por lo que hay en pantalla" : "Por lo que se ve"
+        case .ocr: return "Por el texto que contiene"
+        case .frame: return "Por el fotograma de \(place)"
+        case .audio: return kind == .video ? "Por el sonido en \(place)" : "Por lo que se oye en \(place)"
+        case .page: return "Por el texto de \(page)"
+        case .pageImage where isDeck: return "Por una imagen de la diapositiva \(loc.map { Int($0) } ?? 1)"
+        case .pageImage: return "Por \(page)"
+        case .chunk where isDeck: return "Por la diapositiva \(loc.map { Int($0) } ?? 1)"
+        case .chunk: return "Por su texto"
+        case .name: return "Por su nombre"
+        case .lines, .cells: return "Por \(spanishSpan() ?? "el código")"
+        }
+    }
+
+    /// `span`, in Spanish: "las líneas 12–40", "la celda 3"; for a badge, without the article: "líneas 12–40".
+    func spanishSpan(article: Bool = true) -> String? {
+        guard let loc else { return nil }
+        let (first, last) = (Int(loc), Int(locEnd ?? loc))
+        let noun: String
+        switch segment {
+        case .lines: noun = first == last ? "línea \(first)" : "líneas \(first)–\(last)"
+        case .cells: noun = first == last ? "celda \(first)" : "celdas \(first)–\(last)"
+        default: return nil
+        }
+        guard article else { return noun }
+        return (first == last ? "la " : "las ") + noun
+    }
+
+    /// `place`, in Spanish, for the badges: "pág. 3", "diap. 2", "0:06", "♪ 0:25", "L12–40", "celdas 3–5".
+    var spanishPlace: String? {
+        guard let loc else { return nil }
+        switch segment {
+        case .chunk where isDeck, .pageImage where isDeck: return "diap. \(Int(loc))"
+        case .page, .pageImage: return "pág. \(Int(loc))"
+        case .cells: return spanishSpan(article: false)
+        default: return place
+        }
+    }
+
+    /// `details`, in Spanish: "Vídeo · 12 oct 2026 · 0:18 · 2,1 MB".
+    var spanishDetails: String {
+        let date = modified.formatted(.dateTime.day().month(.abbreviated).year().locale(Self.spanish))
+        if kind == .code {
+            var parts = [CodeExtractor.language(of: url.path)]
+            if let cells = info["cells"].flatMap(Int.init) {
+                parts.append(cells == 1 ? "1 celda" : "\(cells) celdas")
+            } else if let lines = info["lines"].flatMap(Int.init) {
+                parts.append(lines == 1 ? "1 línea" : "\(lines.formatted(.number.locale(Self.spanish))) líneas")
+            }
+            parts.append(date)
+            if size > 0 { parts.append(bytes(size)) }
+            return parts.joined(separator: " · ")
+        }
+        var parts = [kind.spanishTitle, date]
+        if let width = info["width"], let height = info["height"] { parts.append("\(width) × \(height)") }
+        let readTo = info["read_to"].flatMap(Int.init)
+        if let pages = info["pages"].flatMap(Int.init) {
+            parts.append((pages == 1 ? "1 página" : "\(pages) páginas") + (readTo.map { ", \($0) leídas" } ?? ""))
+        } else if let slides = info["slides"].flatMap(Int.init) {
+            parts.append((slides == 1 ? "1 diapositiva" : "\(slides) diapositivas") + (readTo.map { ", \($0) leídas" } ?? ""))
+        } else if readTo != nil {
+            parts.append("leído en parte")
+        }
+        if let duration { parts.append(Self.clock(duration)) }
+        if size > 0 { parts.append(bytes(size)) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// What ↩ does, in the panel's words: "abrir en 0:06", "abrir en Zed".
+    var spanishOpenTitle: String {
+        if kind == .code, !CodeEditor.current.id.isEmpty { return "abrir en \(CodeEditor.current.name)" }
+        if let moment, moment >= 1, Opener.jumpsToMoments(url) { return "abrir en \(Self.clock(moment))" }
+        return "abrir"
+    }
+}
+
+extension ResultGroupKind {
+    /// The column's name in the panel.
+    var spanishTitle: String {
+        switch self {
+        case .screenshots: "Capturas"
+        case .images: "Imágenes"
+        case .documents: "Documentos"
+        case .video: "Vídeo"
+        case .audio: "Audio"
+        case .code: "Código"
+        }
+    }
+
+    /// An empty column's rail: "Sin vídeo".
+    var spanishNone: String { "Sin \(spanishTitle.lowercased())" }
+}
+
+extension FileKind {
+    var spanishTitle: String {
+        switch self {
+        case .screenshot: "Captura"
+        case .image: "Imagen"
+        case .pdf: "PDF"
+        case .doc: "Documento"
+        case .audio: "Audio"
+        case .video: "Vídeo"
+        case .code: "Código"
         }
     }
 }

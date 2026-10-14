@@ -8,10 +8,13 @@ import Sparkle
 /// DigUp lives in the menu bar, so an update the daily check finds doesn't pop up over whatever you're doing (Sparkle's
 /// "gentle reminders"): it waits in the menu ("Update to DigUp 0.6.1…"), as a dot on the menubar mark, and in the
 /// window's status bar, until you open it. Checks you ask for show Sparkle's window at once.
+///
+/// Biblo has no update channel of its own yet: without `SUFeedURL` in Info.plist none of this runs, and no menu offers
+/// a check (`hasFeed`).
 final class Updates: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
     private let model: AppModel
     private var controller: SPUStandardUpdaterController!
-    /// Sparkle's window closed: the Dock icon goes unless one of DigUp's windows is open.
+    /// Sparkle's window closed: what the windows held goes, unless one of Biblo's windows is open.
     var onSessionEnded: () -> Void = {}
 
     init(model: AppModel) {
@@ -22,7 +25,10 @@ final class Updates: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate
 
     /// Dev and test runs (their own defaults suite) don't check: Sparkle keeps its state in the app's real defaults.
     /// `-debugUpdates YES` lets one check anyway.
+    static var hasFeed: Bool { !((Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String) ?? "").isEmpty }
+
     func start() {
+        guard Self.hasFeed else { return log("updates: off (no SUFeedURL in Info.plist)") }
         let defaults = UserDefaults.standard
         guard defaults.string(forKey: "defaultsSuite") == nil || defaults.bool(forKey: "debugUpdates") else { return }
         controller.startUpdater()
@@ -60,8 +66,7 @@ final class Updates: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate
     func standardUserDriverWillHandleShowingUpdate(_ handleShowingUpdate: Bool, forUpdate update: SUAppcastItem,
                                                    state: SPUUserUpdateState) {
         if handleShowingUpdate {
-            // Sparkle's window comes up: like DigUp's own windows, with the Dock icon while it's open.
-            NSApp.setActivationPolicy(.regular)
+            // Sparkle's window comes up in front, like Biblo's own windows.
             bringAppToFront()
         } else {
             model.updateAvailable = update.displayVersionString

@@ -145,8 +145,8 @@ struct PreviewPane: View {
                 .buttonStyle(.plain)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-                .help("Show in Finder")
-                Text(row.details)
+                .help("Mostrar en el Finder")
+                Text(row.spanishDetails)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -159,7 +159,7 @@ struct PreviewPane: View {
     }
 }
 
-/// Open and Show in Finder, under the preview (the panel and the window).
+/// Abrir and Mostrar en el Finder, under the big window's preview.
 struct PreviewActions: View {
     let row: ResultRow
     let open: () -> Void
@@ -168,9 +168,9 @@ struct PreviewActions: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Button(row.openTitle, action: open)
+            Button(row.spanishOpenTitle.capitalizedFirst, action: open)
                 .keyboardShortcut(.defaultAction)
-            Button("Show in Finder", action: reveal)
+            Button("Mostrar en el Finder", action: reveal)
         }
         .controlSize(controlSize)
     }
@@ -183,6 +183,9 @@ struct PreviewPicture: View {
     let size: CGSize
     /// Double-click opens it, as in Finder's and Spotlight's previews (not on the player or its controls).
     var open: () -> Void = {}
+    /// Biblo's panel: the sides a picture doesn't fill (a square photo, a portrait frame in a wide card) glow with its
+    /// own colors, blurred.
+    var ambient = false
     @State private var image: NSImage?
     @State private var loaded = false
     @Environment(\.displayScale) private var scale
@@ -218,6 +221,7 @@ struct PreviewPicture: View {
                         .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
                     .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
                     .frame(maxWidth: size.width, maxHeight: size.height)
+                    .background { if ambient { Ambient(image: image) } }
             } else {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Color.primary.opacity(0.05))
@@ -252,7 +256,7 @@ struct PreviewPicture: View {
 
     /// The page or moment that matched, on the picture; for a video, where in it.
     @ViewBuilder private var marks: some View {
-        if let place = row.place {
+        if let place = row.spanishPlace {
             VStack(alignment: .leading, spacing: 7) {
                 PlaceBadge(text: place, onImage: true)
                 if row.kind == .video, let loc = row.loc, let duration = row.duration, duration > 0 {
@@ -267,6 +271,27 @@ struct PreviewPicture: View {
                 }
             }
         }
+    }
+}
+
+/// `PreviewPicture`'s `ambient`: the picture again, filling its place, blurred into a glow of its colors.
+private struct Ambient: View {
+    let image: NSImage
+
+    var body: some View {
+        // `Color.clear` takes exactly the place it's offered; the filling picture overflows it and is clipped back.
+        Color.clear
+            .overlay {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .blur(radius: 28, opaque: true)
+                    .saturation(1.1)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .opacity(0.5)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 
@@ -285,10 +310,10 @@ struct AudioMoment: View {
                     Image(systemName: playback.isCurrent(row) && playback.isPlaying ? "pause.circle.fill"
                                                                                      : "play.circle.fill")
                         .font(.system(size: 34))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(Brand.ink)
                 }
                 .buttonStyle(.plain)
-                .help(row.loc.map { "Play from \(ResultRow.clock($0))" } ?? "Play")
+                .help(row.loc.map { "Reproducir desde \(ResultRow.clock($0))" } ?? "Reproducir")
             }
             if let loc = row.loc {
                 VStack(spacing: 5) {
@@ -297,7 +322,7 @@ struct AudioMoment: View {
                                   playhead: playback.isCurrent(row) ? playback.time : nil)
                             .frame(maxWidth: 260)
                     }
-                    Text(playback.isCurrent(row) ? "\(ResultRow.clock(playback.time)) – playing from "
+                    Text(playback.isCurrent(row) ? "\(ResultRow.clock(playback.time)) – sonando desde "
                          + ResultRow.clock(loc) : span(from: loc))
                         .font(.system(size: 11).monospacedDigit())
                         .foregroundStyle(.secondary)
@@ -308,22 +333,22 @@ struct AudioMoment: View {
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.04)))
     }
 
-    /// "0:25 – 0:55 of 3:12"
+    /// "0:25 – 0:55 de 3:12"
     private func span(from start: Double) -> String {
         let end = row.locEnd ?? start + 30
-        let total = row.duration.map { " of " + ResultRow.clock($0) } ?? ""
+        let total = row.duration.map { " de " + ResultRow.clock($0) } ?? ""
         return ResultRow.clock(start) + " – " + ResultRow.clock(end) + total
     }
 }
 
-/// "Matches the frame at 0:06" and the words it has, if any.
+/// "Por el fotograma de 0:06" and the words it has, if any.
 struct WhyItMatched: View {
     let row: ResultRow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Label {
-                Text(row.reason)
+                Text(row.spanishReason)
             } icon: {
                 Image(systemName: row.matchedMeaning ? "sparkle.magnifyingglass" : "textformat")
                     .foregroundStyle(row.matchedMeaning ? AnyShapeStyle(Brand.gradient) : AnyShapeStyle(.secondary))
@@ -356,8 +381,8 @@ struct PlayButton: View {
                 .overlay(Circle().strokeBorder(.white.opacity(0.7), lineWidth: 1.5))
         }
         .buttonStyle(.plain)
-        .help(row.moment.map { "Play from \(ResultRow.clock($0))" } ?? "Play")
-        .accessibilityLabel(row.moment.map { "Play from \(ResultRow.clock($0))" } ?? "Play")
+        .help(row.moment.map { "Reproducir desde \(ResultRow.clock($0))" } ?? "Reproducir")
+        .accessibilityLabel(row.moment.map { "Reproducir desde \(ResultRow.clock($0))" } ?? "Reproducir")
     }
 }
 
@@ -389,12 +414,12 @@ struct Passage: View {
         .task(id: row.previewKey) { text = await Previews.shared.passage(row.segmentID, false) }
     }
 
-    /// "Part 2 of 5", when the document has more than one.
+    /// "Parte 2 de 5", when the document has more than one; "Diapositiva 2 de 12" in a deck.
     private var partLabel: String? {
         guard let part = row.loc.map(Int.init), let parts = row.info["chunks"].flatMap(Int.init), parts > 1 else {
             return nil
         }
-        return "Part \(part) of \(parts)"
+        return row.isDeck ? "Diapositiva \(part) de \(parts)" : "Parte \(part) de \(parts)"
     }
 
     /// Up to ~900 characters from just before the first marked word, the words marked like a search in Preview.
@@ -451,7 +476,7 @@ struct CodeLines: View {
                         }
                         .padding(.vertical, 0.5)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(isFocus(offset) ? Brand.amber.opacity(0.16) : Color.clear)
+                        .background(isFocus(offset) ? Brand.violet.opacity(0.14) : Color.clear)
                         .id(offset)
                     }
                 }
@@ -466,7 +491,7 @@ struct CodeLines: View {
         }
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.045)))
         .overlay(alignment: .bottomTrailing) {
-            if let span = row.span { PlaceBadge(text: span, onImage: true).padding(8) }
+            if let span = row.spanishSpan(article: false) { PlaceBadge(text: span, onImage: true).padding(8) }
         }
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.primary.opacity(0.1),

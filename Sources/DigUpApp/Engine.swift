@@ -37,6 +37,8 @@ nonisolated struct EngineStatus: Sendable, Equatable {
     var missingRoots: [String] = []
     /// Chosen folders macOS doesn't let DigUp read (Privacy & Security → Files and Folders): skipped, files kept.
     var unreadableRoots: [String] = []
+    /// A chosen folder the indexer has been waiting to read for a while, most likely on macOS's permission prompt.
+    var opening: String?
     /// The code index, when code search is on.
     var code = Code()
 
@@ -99,9 +101,11 @@ nonisolated final class Engine: @unchecked Sendable {
     /// The next helper drops files under folders that are no longer chosen. At launch too, in case the folders
     /// changed while a helper had no time to; but an app with no folders at all never empties the index by itself.
     private var pruneWanted: Bool
-    /// When a sync was last asked for that no helper has started yet; a helper that exits before doing it is
-    /// restarted.
+    /// When a sync of the main index, or of the code index, was last asked for that no helper has started yet. A new
+    /// helper syncs only what's owed (`--sync`): a change in the code folders doesn't walk all the others again, nor
+    /// does the backfill starting on power. One that exits before doing a sync asked for while it ran is restarted.
     private var syncWantedAt: Date?
+    private var codeSyncWantedAt: Date?
     private var lastSearcherRefresh = Date.distantPast
 
     /// Code search: the code index once code has been quiet this long (a file being edited changes on every save, a
@@ -111,10 +115,15 @@ nonisolated final class Engine: @unchecked Sendable {
 
     // watchQueue only
     private var watcher: FolderWatcher?
+    /// The code projects the helper's last main walk found (`ChangeFilter.setProjects`), for the next watcher too.
+    private var knownProjects: [String] = []
     private var syncDebounce: DispatchWorkItem?
     private var codeWatcher: FolderWatcher?
     private var codeSyncDebounce: DispatchWorkItem?
     private var codeChangedSince: Date?
+    /// Changes the watchers left out that the log hasn't told yet (a line a minute at most: OneDrive downloading a
+    /// folder of scripts is thousands), by watcher (true: the code folders'), with the last one's name.
+    private var ignoredChanges: [Bool: (count: Int, last: String)] = [:]
 
     // Any thread, under `lock`
     private var paused = false
@@ -198,7 +207,7 @@ nonisolated final class Engine: @unchecked Sendable {
                 update { $0.activity = .failed("Can't open the index") }
                 return
             }
-            indexQueue.async { [self] in startHelper() }
+            indexQueue.async { [self] in requestSync(main: true, code: true) }
         }
         watchQueue.async { [self] in
             startWatching()
@@ -236,6 +245,7 @@ nonisolated final class Engine: @unchecked Sendable {
             }
             indexQueue.async { [self] in
                 pruneWanted = true
+                codeSyncWantedAt = roots.isEmpty ? nil : Date()
                 // Off: the index goes once no helper has it open. On again before that: it stays (and is pruned).
                 deleteCodeIndex = roots.isEmpty && (wasOn || deleteCodeIndex)
                 if helper != nil {
@@ -252,10 +262,14 @@ nonisolated final class Engine: @unchecked Sendable {
     /// New folders or exclusions: the watcher follows, and the helper restarts with them once its current batch is
     /// done. Files under folders that are no longer chosen, or newly excluded, leave the index.
     func setFolders(roots: [URL], excluded: [URL], excludedTypes: [String]) {
-        lock.withLock {
-            self.roots = roots
-            self.excluded = excluded
-            self.excludedTypes = excludedTypes
+        // Skipped types apply to the code index too: its watcher and its sync follow.
+        let typesChanged = lock.withLock { () -> Bool in
+            defer {
+                self.roots = roots
+                self.excluded = excluded
+                self.excludedTypes = excludedTypes
+            }
+            return self.excludedTypes != excludedTypes
         }
         log("folders: \(roots.map { tildePath($0.path) })" + (excluded.isEmpty ? "" : " minus \(excluded.map { tildePath($0.path) })")
             + (excludedTypes.isEmpty ? "" : " · skipping .\(excludedTypes.joined(separator: ", ."))"))
@@ -264,9 +278,14 @@ nonisolated final class Engine: @unchecked Sendable {
             $0.unreadableRoots = []
             if roots.isEmpty { $0.activity = .idle }
         }
-        watchQueue.async { [self] in startWatching() }
+        watchQueue.async { [self] in
+            startWatching()
+            if typesChanged { startWatchingCode() }
+        }
         indexQueue.async { [self] in
             pruneWanted = true
+            syncWantedAt = Date()
+            if typesChanged, hasCode { codeSyncWantedAt = Date() }
             if helper != nil {
                 restartHelper = true
                 send("stop")
@@ -280,7 +299,8 @@ nonisolated final class Engine: @unchecked Sendable {
     func modelArrived() {
         update { $0.waitingForModel = false }
         encoderQueue.async { [self] in encoderFailed = false }
-        indexQueue.async { [self] in requestSync() }
+        // The code index too: before the model, a helper only syncs the main one.
+        indexQueue.async { [self] in requestSync(main: true, code: true) }
     }
 
     /// A drive was connected or ejected: a missing folder may be back (or gone).
@@ -289,10 +309,7 @@ nonisolated final class Engine: @unchecked Sendable {
             startWatching()
             startWatchingCode()
         }
-        indexQueue.async { [self] in
-            requestSync()
-            if hasCode { send("sync code") }
-        }
+        indexQueue.async { [self] in requestSync(main: true, code: true) }
     }
 
     private func openSearcher() -> Bool {
@@ -374,13 +391,23 @@ nonisolated final class Engine: @unchecked Sendable {
 
     // MARK: Indexing (in the helper process)
 
-    /// Watches the chosen folders that are there (a missing one is picked up when a drive connects).
+    /// Watches the chosen folders that are there (a missing one is picked up when a drive connects), for changes that
+    /// can change what the helper's walk of them finds (`ChangeFilter`, with the helper's settings).
     private func startWatching() {
         watcher = nil
-        let present = lock.withLock { roots }.filter(AppSettings.isFolder)
+        let (roots, excluded, types): ([URL], [URL], [String]) = lock.withLock {
+            (self.roots, self.excluded, self.excludedTypes)
+        }
+        let present = roots.filter(AppSettings.isFolder)
         guard !present.isEmpty else { return }
-        watcher = FolderWatcher(paths: present.map(\.path), latency: 0.25, queue: watchQueue) { [weak self] paths in
-            self?.foldersChanged(paths)
+        var options = IndexOptions()
+        options.excludedFolders = excluded.map(\.path)
+        options.excludedExtensions = IndexOptions.extensions(types.joined(separator: ","))
+        var filter = ChangeFilter(roots: present.map(\.path), options: options)
+        filter.setProjects(knownProjects)
+        watcher = FolderWatcher(paths: present.map(\.path), filter: filter, latency: 0.25, queue: watchQueue) {
+            [weak self] changed, ignored in
+            self?.foldersChanged(changed, ignored: ignored)
         }
         log(watcher == nil ? "watch: can't watch the folders" : "watch: \(present.count) folders")
     }
@@ -390,52 +417,48 @@ nonisolated final class Engine: @unchecked Sendable {
         codeWatcher = nil
         codeSyncDebounce?.cancel()
         codeChangedSince = nil
-        let present = lock.withLock { codeRoots }.filter(AppSettings.isFolder)
+        let (roots, excluded, types): ([URL], [URL], [String]) = lock.withLock {
+            (self.codeRoots, self.codeExcluded, self.excludedTypes)
+        }
+        let present = roots.filter(AppSettings.isFolder)
         guard !present.isEmpty else { return }
-        codeWatcher = FolderWatcher(paths: present.map(\.path), latency: 2, queue: watchQueue) { [weak self] paths in
-            self?.codeChanged(paths)
+        var options = IndexOptions()
+        options.code = true
+        options.excludedFolders = excluded.map(\.path)
+        options.excludedExtensions = IndexOptions.extensions(types.joined(separator: ","))   // they apply to code too
+        let filter = ChangeFilter(roots: present.map(\.path), options: options)
+        codeWatcher = FolderWatcher(paths: present.map(\.path), filter: filter, latency: 2, queue: watchQueue) {
+            [weak self] changed, ignored in
+            self?.codeChanged(changed, ignored: ignored)
         }
         log(codeWatcher == nil ? "watch: can't watch the code folders" : "watch: \(present.count) code folders")
     }
 
     /// FSEvents in the code folders, on watchQueue. Code that's being worked on changes all the time: the code index
-    /// catches up once it's been quiet for `codeQuietSeconds` (or every `codeLongestWait` while it isn't). Changes
-    /// code search never reads (git's own files, builds, dependencies) don't count.
-    private func codeChanged(_ paths: [String]) {
-        let relevant = paths.filter { path in
-            !path.split(separator: "/").contains { part in
-                part.hasPrefix(".") || Self.codeNoise.contains(String(part))
-            }
-        }
-        guard !relevant.isEmpty else { return }
+    /// catches up once it's been quiet for `codeQuietSeconds` (or every `codeLongestWait` while it isn't), and only
+    /// it: the other folders aren't walked again for it.
+    private func codeChanged(_ changed: [FileChange], ignored: [FileChange]) {
+        noteIgnored(ignored, code: true)
+        guard let last = changed.last else { return }
         let now = Date()
         if codeChangedSince == nil { codeChangedSince = now }
         codeSyncDebounce?.cancel()
         let work = DispatchWorkItem { [self] in
             codeChangedSince = nil
-            log("watch: code changed (\((relevant.first as NSString?)?.lastPathComponent ?? ""))")
-            indexQueue.async { [self] in requestCodeSync() }
+            log("watch: code changed (\((last.path as NSString).lastPathComponent))")
+            indexQueue.async { [self] in requestSync(main: false, code: true) }
         }
         codeSyncDebounce = work
         let waited = now.timeIntervalSince(codeChangedSince ?? now)
         watchQueue.asyncAfter(deadline: .now() + max(0, min(codeQuietSeconds, codeLongestWait - waited)), execute: work)
     }
 
-    /// Folders whose changes don't concern the code index (what `Rules` keeps code search out of, by name).
-    private static let codeNoise: Set<String> = [
-        "node_modules", "bower_components", "venv", "site-packages", "__pycache__", "DerivedData", "Pods", "Carthage",
-        "vendor", "Vendor", "third_party", "build", "Build", "dist", "out", "target", "obj", "coverage", "wandb",
-        "mlruns", "lightning_logs",
-    ]
-
-    private func requestCodeSync() {
-        if helper != nil { send("sync code") } else { startHelper() }
-    }
-
     /// FSEvents, on watchQueue. Waits for things to settle (a copy in progress, a burst of screenshots), then asks
     /// the helper to sync; a running batch yields to that at its next boundary.
-    private func foldersChanged(_ paths: [String]) {
-        log("watch: \(paths.count) changed (\((paths.first as NSString?)?.lastPathComponent ?? ""))")
+    private func foldersChanged(_ changed: [FileChange], ignored: [FileChange]) {
+        noteIgnored(ignored, code: false)
+        guard let last = changed.last else { return }
+        log("watch: \(changed.count) changed (\((last.path as NSString).lastPathComponent))")
         syncDebounce?.cancel()
         let work = DispatchWorkItem { [self] in
             indexQueue.async { [self] in requestSync() }
@@ -444,19 +467,48 @@ nonisolated final class Engine: @unchecked Sendable {
         watchQueue.asyncAfter(deadline: .now() + 0.75, execute: work)
     }
 
-    private func requestSync() {
-        syncWantedAt = Date()
-        if helper != nil { send("sync") } else { startHelper() }
+    /// What the watchers left out goes in the log as a count, a line a minute at most, on watchQueue.
+    private func noteIgnored(_ changes: [FileChange], code: Bool) {
+        guard let last = changes.last else { return }
+        let name = (last.path as NSString).lastPathComponent
+        if let tally = ignoredChanges[code] {
+            ignoredChanges[code] = (tally.count + changes.count, name)
+            return
+        }
+        ignoredChanges[code] = (changes.count, name)
+        watchQueue.asyncAfter(deadline: .now() + 60) { [self] in
+            guard let tally = ignoredChanges.removeValue(forKey: code) else { return }
+            log("watch: \(tally.count) changes in the \(code ? "code " : "")folders left out in a minute, as they "
+                + "can't change the index (last: \(tally.last))")
+        }
     }
 
-    /// Starts `digup index-service` unless one is running (or indexing is paused). It syncs first, indexes up to
-    /// 50 new files on any power source, then the backfill if the power policy allows; it exits a minute after
-    /// its last file. Before the model has downloaded it only syncs (file names become searchable) and exits.
+    /// Asks for a sync of the main index, the code index, or both, on indexQueue. A running helper is told; else one
+    /// starts that does what's owed (`startHelper`).
+    private func requestSync(main: Bool = true, code: Bool = false) {
+        let code = code && hasCode
+        guard main || code else { return }
+        let now = Date()
+        if main { syncWantedAt = now }
+        if code { codeSyncWantedAt = now }
+        // The helper gets to the code index only after the model: until it's here (`modelArrived` asks again), a code
+        // change alone starts nothing.
+        if !main, lock.withLock({ status.waitingForModel }) { return }
+        guard helper != nil else { return startHelper() }
+        if main { send("sync") }
+        if code { send("sync code") }
+    }
+
+    /// Starts `digup index-service` unless one is running (or indexing is paused). It syncs what's owed (both, unless
+    /// `--sync` says otherwise), indexes up to 50 new files on any power source, then the backfill if the power policy
+    /// allows; it exits a minute after its last file. Before the model has downloaded it only syncs the main index
+    /// (file names become searchable) and exits.
     private func startHelper() {
         let (roots, excluded, types, paused, backfill): ([URL], [URL], [String], Bool, Bool) = lock.withLock {
             (self.roots, self.excluded, self.excludedTypes, self.paused, backfillBlocker == nil)
         }
         let (codeRoots, codeExcluded) = lock.withLock { (self.codeRoots, self.codeExcluded) }
+        if codeRoots.isEmpty { codeSyncWantedAt = nil }   // code search is off
         guard helper == nil, !paused else { return }
         guard !roots.isEmpty || !codeRoots.isEmpty || pruneWanted else {
             update { $0.activity = .idle }
@@ -467,6 +519,8 @@ nonisolated final class Engine: @unchecked Sendable {
         var arguments = ["index-service", "--index", indexDirectory.path]
         if backfill { arguments.append("--backfill") }
         if pruneWanted { arguments.append("--prune") }
+        let owed = [syncWantedAt.map { _ in "main" }, codeSyncWantedAt.map { _ in "code" }].compactMap { $0 }
+        if owed.count < 2 { arguments += ["--sync", owed.isEmpty ? "none" : owed.joined(separator: ",")] }
         for folder in excluded { arguments += ["--exclude", folder.path] }
         for type in types { arguments += ["--exclude-ext", type] }
         for folder in codeRoots { arguments += ["--code-root", folder.path] }
@@ -506,7 +560,8 @@ nonisolated final class Engine: @unchecked Sendable {
             $0.unreadableRoots = []
             $0.code.missingRoots = []
         }
-        log("indexer: started (pid \(process.processIdentifier))")
+        log("indexer: started (pid \(process.processIdentifier), "
+            + (owed.isEmpty ? "nothing to sync" : "syncing \(owed.joined(separator: " and "))") + ")")
     }
 
     private func send(_ command: String) {
@@ -530,15 +585,42 @@ nonisolated final class Engine: @unchecked Sendable {
 
     private func handle(_ event: [String: Any]) {
         func int(_ key: String) -> Int { event[key] as? Int ?? 0 }
+        switch event["event"] as? String {
+        case "opening":
+            let folder = event["folder"] as? String ?? ""
+            update { $0.opening = folder }
+            log("indexer: waiting to read \(tildePath(folder)); macOS may be asking for permission")
+            return
+        case "opened":
+            let readable = event["readable"] as? Bool == true
+            log("indexer: \(tildePath(event["folder"] as? String ?? "")) \(readable ? "readable" : "not readable")")
+        default:
+            break
+        }
+        if lock.withLock({ status.opening != nil }) { update { $0.opening = nil } }   // the helper is past it
         if event["code"] as? Bool == true { return handleCode(event) }
         switch event["event"] as? String {
         case "sync":
-            if let started = event["started"] as? Double, let wanted = syncWantedAt,
-               started >= wanted.timeIntervalSince1970 {
-                syncWantedAt = nil
+            if owedSyncDone(event, wantedAt: syncWantedAt) { syncWantedAt = nil }
+            if let projects = event["projects"] as? [String] {
+                watchQueue.async { [self] in
+                    guard projects != knownProjects else { return }
+                    knownProjects = projects
+                    watcher?.setProjects(projects)
+                    log("watch: \(projects.count) code projects in the folders; only screenshots count inside them")
+                }
             }
             applyCounts(event)
-            if int("new") > 0 { update { $0.activity = .indexing(done: 0, total: int("new")) } }
+            let new = int("new")
+            update {
+                // Nothing new: the helper may go straight on to the backfill or the code index, so this is the first
+                // sign that it's up. The status line then says what's waiting.
+                if new > 0 {
+                    $0.activity = .indexing(done: 0, total: new)
+                } else if case .starting = $0.activity {
+                    $0.activity = .idle
+                }
+            }
             log("sync: \(int("added")) new · \(int("changed")) changed · \(int("moved")) moved · "
                 + "\(int("removed")) removed · \(int("unchanged")) unchanged in \(int("ms")) ms")
         case "file":
@@ -555,9 +637,18 @@ nonisolated final class Engine: @unchecked Sendable {
         case "summary":
             let states = (event["states"] as? [String: Int] ?? [:]).sorted { $0.key < $1.key }
                 .map { "\($0.value) \($0.key)" }.joined(separator: " · ")
-            let what = event["rest"] as? Bool == true ? "the rest of long files"
-                : event["new"] as? Bool == true ? "new files" : "backfill"
+            let rest = event["rest"] as? Bool == true
+            let what = rest ? "the rest of long files" : event["new"] as? Bool == true ? "new files" : "backfill"
             log("index: \(what): \(states) in \(int("ms")) ms")
+            // The pass is over (the helper may go on to the code index for a long while): not "Indexing 100%".
+            applyCounts(event)
+            update {
+                switch $0.activity {
+                case .indexing where !rest, .finishing where rest: $0.activity = .idle
+                default: break
+                }
+            }
+            refreshSearcher(force: true)
         case "idle":
             applyCounts(event)
             update { $0.activity = .idle }
@@ -595,6 +686,7 @@ nonisolated final class Engine: @unchecked Sendable {
         func int(_ key: String) -> Int { event[key] as? Int ?? 0 }
         switch event["event"] as? String {
         case "sync":
+            if owedSyncDone(event, wantedAt: codeSyncWantedAt) { codeSyncWantedAt = nil }
             applyCounts(event)
             if int("new") > 0 { update { $0.code.indexing = .init(done: 0, total: int("new")) } }
             log("code sync: \(int("added")) new · \(int("changed")) changed · \(int("moved")) moved · "
@@ -606,6 +698,7 @@ nonisolated final class Engine: @unchecked Sendable {
             let states = (event["states"] as? [String: Int] ?? [:]).sorted { $0.key < $1.key }
                 .map { "\($0.value) \($0.key)" }.joined(separator: " · ")
             log("index: code: \(states) in \(int("ms")) ms")
+            applyCounts(event)
             update { $0.code.indexing = nil }
             refreshCodeSearcher(force: true)
         case "missing":
@@ -644,6 +737,13 @@ nonisolated final class Engine: @unchecked Sendable {
         }
     }
 
+    /// Whether a "sync" event settles a sync asked for at `wantedAt`: it started after the ask, with the folders of
+    /// then (a helper on its way out to make room for new folders still walks the old ones).
+    private func owedSyncDone(_ event: [String: Any], wantedAt wanted: Date?) -> Bool {
+        guard let wanted, let started = event["started"] as? Double else { return false }
+        return started >= wanted.timeIntervalSince1970 && !restartHelper
+    }
+
     private func helperExited(status: Int32) {
         helper = nil
         helperInput = nil
@@ -652,6 +752,7 @@ nonisolated final class Engine: @unchecked Sendable {
             if case .indexing = $0.activity { $0.activity = .idle }
             if case .finishing = $0.activity { $0.activity = .idle }
             if case .starting = $0.activity { $0.activity = .idle }
+            $0.opening = nil
             $0.code.indexing = nil
         }
         refreshSearcher(force: true)
@@ -662,8 +763,9 @@ nonisolated final class Engine: @unchecked Sendable {
             // The folders changed: a new helper with the new ones.
             restartHelper = false
             startHelper()
-        } else if syncWantedAt != nil, status == 0 {
-            // A sync asked for while it was on its way out still has to happen.
+        } else if status == 0, [syncWantedAt, codeSyncWantedAt].contains(where: { $0.map { $0 > helperStarted } ?? false }) {
+            // A sync asked for while it was on its way out still has to happen. One owed since before it started (the
+            // code index's, while the model downloads) waits for whatever starts the next one, or this would loop.
             startHelper()
         }
     }
@@ -730,9 +832,9 @@ nonisolated final class Engine: @unchecked Sendable {
     /// Hybrid search. Without a vector it's keyword-only (file names, OCR and document text), which is what the panel
     /// shows while the query encoder starts. Files that are gone (deleted since the last sync, or on a drive that's
     /// unplugged) are left out.
-    /// `code`: the code index (its own folders), never anything else.
+    /// `code`: the code index (its own folders), never anything else. `depth`: `Searcher.search`'s.
     func search(_ text: String, vector: QueryVector?, prefixLast: Bool, kinds: Set<FileKind>? = nil,
-                limit: Int = 40, code: Bool = false) async -> [SearchHit] {
+                limit: Int = 40, depth: Double = 0, code: Bool = false) async -> [SearchHit] {
         if code { return await searchCode(text, vector: vector, prefixLast: prefixLast, limit: limit) }
         return await withCheckedContinuation { continuation in
             searchQueue.async { [self] in
@@ -744,7 +846,7 @@ nonisolated final class Engine: @unchecked Sendable {
                     }
                     values = nil
                 }
-                let hits = try? searcher?.search(text, queryVector: values, kinds: kinds, limit: limit,
+                let hits = try? searcher?.search(text, queryVector: values, kinds: kinds, limit: limit, depth: depth,
                                                  prefixLast: prefixLast)
                 // Only files that are searched (`FolderSelection`'s rule, as the crawler walks them) and of types not
                 // skipped: a removed folder's rows (or a newly skipped type's) can outlive it until a helper syncs

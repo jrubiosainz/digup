@@ -14,6 +14,9 @@ public enum Rules {
     static let skippedFolderNames: Set<String> = [
         "node_modules", "bower_components", "venv", "site-packages", "__pycache__", "DerivedData", "Pods", "Carthage",
     ]
+    /// Where apps keep what they make for themselves, any case: CapCut's effects in ~/Movies are thousands of images.
+    /// Code search still walks them: in a project, a "cache" folder is usually its own code (ESP-IDF's log cache).
+    static let cacheFolderNames: Set<String> = ["cache", "caches"]
 
     /// Any of these in a folder makes it a code project, where only screenshots are indexed.
     static let projectMarkers = [
@@ -22,7 +25,7 @@ public enum Rules {
     ]
     static let projectBundleExtensions: Set<String> = ["xcodeproj", "xcworkspace"]
 
-    static let docExtensions: Set<String> = ["txt", "text", "md", "markdown", "rtf", "docx", "doc", "odt", "html", "htm"]
+    static let docExtensions: Set<String> = ["txt", "text", "md", "markdown", "rtf", "docx", "doc", "odt", "pptx", "html", "htm"]
 
     /// Source code and data files: off by default (your editor and ripgrep search them better, and they flood an index).
     static let codeExtensions: Set<String> = [
@@ -31,7 +34,7 @@ public enum Rules {
         "lua", "pl", "r", "jl", "dart", "sql", "vue", "svelte", "css", "scss", "sass", "less", "json", "jsonl", "yaml",
         "yml", "toml", "xml", "plist", "gradle", "cmake", "mk", "lock", "log", "csv", "tsv", "ini", "cfg", "conf",
         "proto", "graphql", "tf", "nix", "zig", "hs", "ex", "exs", "erl", "clj", "elm", "ml", "vim", "el", "asm",
-        "metal", "glsl", "hlsl", "wgsl", "cu", "pyi", "pyc",
+        "metal", "glsl", "hlsl", "wgsl", "cu", "pyi", "pyc", "bicep",
     ]
 
     static let screenshotPrefixes = ["Screenshot", "Screen Shot", "CleanShot", "SCR-"]
@@ -45,7 +48,7 @@ public enum Rules {
         "sh", "bash", "zsh", "fish", "ps1", "lua", "pl", "pm", "r", "jl", "dart", "sql", "vue", "svelte", "astro",
         "html", "htm", "css", "scss", "sass", "less", "gradle", "cmake", "mk", "proto", "graphql", "gql", "tf", "hcl",
         "nix", "zig", "hs", "ex", "exs", "erl", "clj", "cljs", "elm", "ml", "mli", "vim", "el", "lisp", "asm", "s",
-        "metal", "glsl", "hlsl", "wgsl", "cu", "cuh", "ino", "v", "sv", "tex",
+        "metal", "glsl", "hlsl", "wgsl", "cu", "cuh", "ino", "v", "sv", "tex", "bicep",
     ]
     /// What goes with code: a repo's docs and its settings.
     static let codeTextExtensions: Set<String> = ["md", "markdown", "rst", "adoc", "org", "txt", "yaml", "yml", "toml"]
@@ -76,12 +79,54 @@ public enum Rules {
         }
         if ["license", "licence", "copying", "notice"].contains(where: lower.hasPrefix) { return .skip("license") }
         if (ext == "ts" || ext == "mts"), isMPEGTransportStream(url) { return .ignore }   // a video
-        if sourceExtensions.contains(ext) || codeTextExtensions.contains(ext) || ext == "ipynb"
-            || codeFileNames.contains(name) || name.hasPrefix("Dockerfile") {
-            return .index(.code)
-        }
+        if mayBeCode(name) { return .index(.code) }
         if codeExtensions.contains(ext) { return .skip("data file") }   // json, csv, lockfiles, logs, plists
         return .ignore
+    }
+
+    /// Whether a file of this name is of a type code search reads (`classifyCode`, from the name alone).
+    static func mayBeCode(_ name: String) -> Bool {
+        let ext = (name as NSString).pathExtension.lowercased()
+        return sourceExtensions.contains(ext) || codeTextExtensions.contains(ext) || ext == "ipynb"
+            || codeFileNames.contains(name) || name.hasPrefix("Dockerfile")
+    }
+
+    /// Whether a file of this name may be indexed (`classify`, from the name alone: a ".ts" may still be a video).
+    /// False only when it surely isn't.
+    static func mayBeIndexed(_ name: String, options: IndexOptions) -> Bool {
+        let ext = (name as NSString).pathExtension.lowercased()
+        if options.excludedExtensions.contains(ext) { return false }
+        if ext == "ts" || ext == "mts" || ext == "m2ts" || docExtensions.contains(ext) { return true }
+        if codeExtensions.contains(ext) { return options.includeCode }
+        guard !ext.isEmpty, let type = UTType(filenameExtension: ext) else { return false }
+        if type.conforms(to: .sourceCode) || type.conforms(to: .script) { return options.includeCode }
+        return type.conforms(to: .pdf) || type.conforms(to: .image) || type.conforms(to: .movie)
+            || type.conforms(to: .audio)
+    }
+
+    /// Whether a file of this name may be an image `classify` indexes (from the name alone): inside a code project, the
+    /// only kind a walk keeps, if it's a screenshot.
+    static func mayBeImage(_ name: String, options: IndexOptions) -> Bool {
+        let ext = (name as NSString).pathExtension.lowercased()
+        if options.excludedExtensions.contains(ext) || ext == "ts" || ext == "mts" || ext == "m2ts"
+            || docExtensions.contains(ext) || codeExtensions.contains(ext) {
+            return false
+        }
+        guard !ext.isEmpty, let type = UTType(filenameExtension: ext) else { return false }
+        return type.conforms(to: .image) && !type.conforms(to: .sourceCode) && !type.conforms(to: .script)
+            && !type.conforms(to: .pdf)
+    }
+
+    /// A file or bundle that makes its folder a code project (`isProjectRoot`).
+    static func isProjectMarker(_ name: String) -> Bool {
+        projectMarkers.contains(name) || projectBundleExtensions.contains((name as NSString).pathExtension)
+    }
+
+    /// Whether a walk never goes into a folder of this name (`skipReason`, and `codeSkipReason` for code; by name
+    /// alone).
+    static func skipsFolder(named name: String, code: Bool) -> Bool {
+        skippedFolderNames.contains(name) || name.hasSuffix(".noindex")
+            || (code ? codeSkippedFolderNames.contains(name) : cacheFolderNames.contains(name.lowercased()))
     }
 
     /// Keys, certificates, password and credential files: never read, wherever they are.
@@ -126,8 +171,19 @@ public enum Rules {
         return .ignore
     }
 
+    /// Only in the cloud: a dataless placeholder (iCloud Drive, OneDrive: any File Provider), which a walk leaves out
+    /// (`Crawler`). Asking doesn't download it.
+    static func isInTheCloud(_ path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0 && info.st_flags & 0x4000_0000 != 0   // SF_DATALESS
+    }
+
     /// MPEG-TS packets start with 0x47 every 188 bytes (or every 192 with a 4-byte timecode, as in .m2ts / AVCHD .mts).
+    /// A file that's only in the cloud isn't sniffed: reading a dataless placeholder (iCloud, OneDrive) downloads it,
+    /// and the crawler leaves it out anyway.
     static func isMPEGTransportStream(_ url: URL) -> Bool {
+        var info = stat()
+        guard stat(url.path, &info) == 0, info.st_flags & 0x4000_0000 == 0 else { return false }  // SF_DATALESS
         guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? handle.close() }
         guard let data = try? handle.read(upToCount: 600), data.count >= 400 else { return false }
@@ -143,9 +199,10 @@ public enum Rules {
         return screenshotPrefixes.contains { name.hasPrefix($0) }
     }
 
-    static func skipReason(forFolder url: URL, home: String, excluded: [String]) -> String? {
+    static func skipReason(forFolder url: URL, home: String, excluded: [String], code: Bool) -> String? {
         let name = url.lastPathComponent
         if skippedFolderNames.contains(name) { return "developer folder" }
+        if !code, cacheFolderNames.contains(name.lowercased()) { return "app cache" }
         if name.hasSuffix(".noindex") { return ".noindex folder" }
         if url.path == home + "/Library" { return "~/Library" }
         if excluded.contains(where: { url.path == $0 || url.path.hasPrefix($0 + "/") }) { return "excluded folder" }

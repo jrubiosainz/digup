@@ -243,7 +243,7 @@ public enum CodeExtractor {
         "asm": "Assembly", "s": "Assembly", "metal": "Metal", "glsl": "GLSL", "hlsl": "HLSL", "wgsl": "WGSL",
         "cu": "CUDA", "cuh": "CUDA", "ino": "Arduino", "v": "Verilog", "sv": "SystemVerilog", "tex": "LaTeX",
         "md": "Markdown", "markdown": "Markdown", "rst": "reStructuredText", "adoc": "AsciiDoc", "org": "Org",
-        "txt": "Text", "yaml": "YAML", "yml": "YAML", "toml": "TOML",
+        "txt": "Text", "yaml": "YAML", "yml": "YAML", "toml": "TOML", "bicep": "Bicep",
     ]
 }
 

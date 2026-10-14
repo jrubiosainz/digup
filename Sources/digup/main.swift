@@ -5,6 +5,9 @@ import LlamaRuntime
 // DigUp's developer CLI. Every command works on an explicit index folder, so tests never touch the real one.
 
 signal(SIGPIPE, SIG_IGN)   // a dead worker must surface as an error, not kill us
+// A file that's only in the cloud (a dataless iCloud or OneDrive placeholder) is never downloaded: reading it fails
+// instead. Every walk and read happens in here, so nothing that slips past `Crawler`'s check can fetch a file.
+setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_PROCESS, IOPOL_MATERIALIZE_DATALESS_FILES_OFF)
 
 let usage = """
     digup: search your files by meaning (DigUp developer CLI)
@@ -17,11 +20,11 @@ let usage = """
       digup status                            what's in the index
       digup eval <queries.json> [-n 10]       recall of known answers (see evals/; "code: …" queries search code)
       digup index-service <folder>... [--code-root DIR]... [--code-exclude DIR]... [--backfill] [--prune]
-                                              the app's indexing helper (JSON lines; see IndexService)
+                          [--sync WHAT]       the app's indexing helper (JSON lines; see IndexService)
       digup worker [--text-only]              the model as a process (JSON lines; the app's query encoder)
 
     Options:
-      --index DIR          index folder (default: ~/Library/Application Support/DigUp/index.noindex)
+      --index DIR          index folder (default: ~/Library/Application Support/Biblo/index.noindex)
       --code               estimate, index or show the code index of these folders (code.sqlite in the index
                            folder): source files, their repos' docs and notebooks, minus what git ignores
       --kind K,K           screenshot, image, pdf, doc, audio, video
@@ -30,13 +33,16 @@ let usage = """
       --exclude DIR        don't index this folder (repeatable)
       --exclude-ext EXT    don't index files with this extension (repeatable, or comma-separated: "heic,txt")
       --reindex            drop vectors and embed everything again (after changing settings or model)
+      --sync WHAT          which syncs index-service starts with: main, code, main,code (default) or none
       --zgate Z            how far a meaning match must stand out (default 2.0)
+      --depth D            how far the gate may come down when the best match only just clears it (default 0;
+                           Biblo's panel uses 0.5, see Searcher.search)
       --word-weight W      bonus for containing all of the query's words (default 2.0, and for code see Searcher)
       --shot-tokens N      vision tokens per screenshot (default 280; 560 was 2× slower, no better on real shots)
       --code-stretch N     characters a stretch of code holds at most (default 1800; 1200 and 3600 lost on the evals)
 
     The model: EmbeddingGemma 2 on llama.cpp, from $DIGUP_MODELS (only there, when set), else
-    ~/Library/Application Support/DigUp/Models or the Hugging Face cache. DIGUP_WORKER_DIR=worker uses the
+    ~/Library/Application Support/Biblo/Models or the Hugging Face cache. DIGUP_WORKER_DIR=worker uses the
     mlx-vlm reference worker instead (evals).
     """
 
@@ -50,8 +56,8 @@ struct Arguments {
     var values: [String: String] = [:]
     var lists: [String: [String]] = [:]
     var flags: Set<String> = []
-    static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--word-weight", "--new-limit",
-                                      "--linger", "--shot-tokens", "--code-stretch"]
+    static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--depth", "--word-weight",
+                                      "--new-limit", "--linger", "--shot-tokens", "--code-stretch", "--sync"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude"]
 
     init(_ raw: ArraySlice<String>) throws {
@@ -77,7 +83,7 @@ struct Arguments {
     }
 
     var indexFolder: URL {
-        URL(fileURLWithPath: ((values["--index"] ?? "~/Library/Application Support/DigUp/index.noindex")
+        URL(fileURLWithPath: ((values["--index"] ?? "~/Library/Application Support/Biblo/index.noindex")
             as NSString).expandingTildeInPath).standardizedFileURL
     }
 
@@ -127,6 +133,7 @@ struct Arguments {
 
     /// Dev knobs for A/B runs in evals/.
     var zGate: Double { values["--zgate"].flatMap(Double.init) ?? 2.0 }
+    var depth: Double { values["--depth"].flatMap(Double.init) ?? 0 }
     var wordWeight: Double? { values["--word-weight"].flatMap(Double.init) }   // nil: the index's own (`Searcher`)
 
     func kinds() throws -> Set<FileKind>? {
@@ -164,6 +171,8 @@ func clock(_ seconds: Double) -> String {
 
 func location(_ hit: SearchHit) -> String {
     switch hit.segment {
+    case .pageImage where SlideExtractor.isDeck(hit.path): hit.loc.map { "slide \(Int($0)) (picture)" } ?? ""
+    case .chunk where SlideExtractor.isDeck(hit.path): hit.loc.map { "slide \(Int($0))" } ?? ""
     case .page, .pageImage: hit.loc.map { "p. \(Int($0))" } ?? ""
     case .audio, .frame: hit.loc.map { "at \(clock($0))" + (hit.segment == .audio ? " (sound)" : "") } ?? ""
     case .chunk: hit.loc.map { "part \(Int($0))" } ?? ""
@@ -344,7 +353,7 @@ func search(_ args: Arguments) throws {
     let encoded = Date()
     let hits = try searcher.search(query, queryVector: vector, kinds: try args.kinds(),
                                    limit: args.values["-n"].flatMap(Int.init) ?? 10, zGate: args.zGate,
-                                   wordWeight: args.wordWeight)
+                                   depth: args.depth, wordWeight: args.wordWeight)
     let searched = Date()
     if args.flags.contains("--json") {
         let rows: [[String: Any]] = hits.map { hit in
@@ -397,6 +406,11 @@ func status(_ args: Arguments) throws {
 
 /// The app's indexing helper: sync + index on request, JSON events out (IndexService.swift).
 func indexService(_ args: Arguments) throws -> Int32 {
+    // The syncs it starts with: the app passes only those it owes (a code change doesn't walk the other folders).
+    let syncs = Set((args.values["--sync"] ?? "main,code").split(separator: ",").map(String.init))
+    guard syncs == ["none"] || !syncs.isEmpty && syncs.isSubset(of: ["main", "code"]) else {
+        throw CLIError("--sync: main, code, main,code or none")
+    }
     // One model for both indexes, started when the first file needs it (`SharedEmbedder`).
     let model = SharedEmbedder {
         try makeEmbedder(textOnly: false, log: args.indexFolder.appendingPathComponent("worker.log"), qos: .utility)
@@ -425,6 +439,7 @@ func indexService(_ args: Arguments) throws -> Int32 {
                                model: model,
                                modelReady: { embedderSource() == nil || LlamaModels.complete },
                                backfill: args.flags.contains("--backfill"),
+                               syncMain: syncs.contains("main"), syncCode: syncs.contains("code"),
                                newFilesLimit: args.values["--new-limit"].flatMap(Int.init) ?? 50,
                                linger: args.values["--linger"].flatMap(Double.init) ?? 60)
     return service.serve()
@@ -468,7 +483,8 @@ func evaluate(_ args: Arguments) throws {
     for (index, query) in eval.queries.enumerated() {
         let kinds = query.kind.flatMap { FileKind(rawValue: $0) }.map { Set([$0]) }
         let hits = try searchers[isCode[index]]!.search(texts[index], queryVector: vectors[index], kinds: kinds,
-                                                       limit: depth, zGate: args.zGate, wordWeight: args.wordWeight)
+                                                       limit: depth, zGate: args.zGate, depth: args.depth,
+                                                       wordWeight: args.wordWeight)
         let strong = Searcher.strongCount(hits)
         shown += strong
         listed += hits.count

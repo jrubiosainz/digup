@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent evaluation checklist</title>
+<style>
+  :root { color-scheme: light; --ink: #1d1d1f; --muted: #6e6e73; --line: #e5e5ea; --accent: #0f6cbd; --ok: #1f8a4c; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f5f5f7; color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  main { max-width: 780px; margin: 48px auto; padding: 44px 52px 36px; background: #fff; border-radius: 18px; box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 12px 40px rgba(0,0,0,.06); }
+  header p { margin: 0; color: var(--muted); font-size: 14px; letter-spacing: .02em; }
+  h1 { margin: 6px 0 10px; font-size: 34px; line-height: 1.15; letter-spacing: -.02em; }
+  .lede { margin: 0 0 28px; color: #3a3a3c; font-size: 17px; }
+  h2 { margin: 34px 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .09em; color: var(--accent); }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: grid; grid-template-columns: 26px 1fr; gap: 6px; padding: 10px 0; border-top: 1px solid var(--line); }
+  li:first-child { border-top: 0; }
+  input { width: 17px; height: 17px; margin: 4px 0 0; accent-color: var(--ok); }
+  li small { display: block; color: var(--muted); font-size: 14px; }
+  code { font: 13.5px ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: #f2f2f5; padding: 1px 5px; border-radius: 5px; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 0; font-size: 15px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+  td:last-child { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  footer { margin-top: 34px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p>Contoso Outdoor · support assistant · updated October 5, 2026</p>
+    <h1>Agent evaluation checklist</h1>
+  </header>
+  <p class="lede">Run through this before every release of the support agent, and again whenever the model, the instructions, a tool or the policy documents change. A release ships only when every box in the first five sections is ticked.</p>
+
+  <h2>1 · Define the job</h2>
+  <ul>
+    <li><input type="checkbox" checked><div>Write down what the agent does: order status, returns and replacements, product questions.<small>And what it never does: refunds above €500, changes to addresses, medical or legal advice.</small></div></li>
+    <li><input type="checkbox" checked><div>Agree on success criteria with the support leads.<small>For example: resolves at least 60% of return requests without a person, with no wrong policy answers.</small></div></li>
+    <li><input type="checkbox" checked><div>Name an owner for the agent and an on-call contact for incidents.</div></li>
+  </ul>
+
+  <h2>2 · Build the test set</h2>
+  <ul>
+    <li><input type="checkbox" checked><div>At least 100 real conversations, anonymized, with the expected outcome for each.</div></li>
+    <li><input type="checkbox" checked><div>Edge cases: orders older than a year, damaged items, partial deliveries, two orders in one message.</div></li>
+    <li><input type="checkbox" checked><div>Questions outside its job, which it should decline politely or hand to a person.</div></li>
+    <li><input type="checkbox"><div>Adversarial inputs: jailbreak attempts, and instructions hidden in an order note or a document (indirect prompt injection).</div></li>
+    <li><input type="checkbox"><div>Both languages we support: English and Spanish.</div></li>
+  </ul>
+
+  <h2>3 · Measure quality</h2>
+  <ul>
+    <li><input type="checkbox"><div>Run the built-in evaluators on the whole test set.<small>Intent resolution, tool call accuracy, task adherence, groundedness and relevance (see <code>src/evaluate.py</code>).</small></div></li>
+    <li><input type="checkbox"><div>Check every answer that cites a policy against the current PDF, page by page.</div></li>
+    <li><input type="checkbox"><div>Compare with the previous version: no metric may drop by more than 5%.</div></li>
+  </ul>
+  <table>
+    <thead><tr><th>Metric</th><th>Target</th><th>Last run</th></tr></thead>
+    <tbody>
+      <tr><td>Intent resolution</td><td>≥ 4.0 / 5</td><td>4.4</td></tr>
+      <tr><td>Tool call accuracy</td><td>≥ 4.0 / 5</td><td>4.2</td></tr>
+      <tr><td>Task adherence</td><td>≥ 90% pass</td><td>93%</td></tr>
+      <tr><td>Groundedness</td><td>≥ 4.0 / 5</td><td>3.8</td></tr>
+      <tr><td>Relevance</td><td>≥ 4.0 / 5</td><td>4.5</td></tr>
+    </tbody>
+  </table>
+
+  <h2>4 · Safety</h2>
+  <ul>
+    <li><input type="checkbox" checked><div>Guardrails on for prompts, outputs, tool calls and tool responses.</div></li>
+    <li><input type="checkbox"><div>Run the AI red teaming scan and fix what it finds.</div></li>
+    <li><input type="checkbox" checked><div>No personal data in logs or traces beyond the order number.</div></li>
+  </ul>
+
+  <h2>5 · Tools</h2>
+  <ul>
+    <li><input type="checkbox" checked><div>Each tool can do only what it needs to (least privilege).<small><code>lookup_order</code> is read-only; <code>create_return</code> can't refund, only open a return.</small></div></li>
+    <li><input type="checkbox" checked><div>The agent asks before any action the customer can't undo.</div></li>
+    <li><input type="checkbox"><div>Tools time out after 10 seconds and the agent says so instead of guessing.</div></li>
+  </ul>
+
+  <h2>6 · People</h2>
+  <ul>
+    <li><input type="checkbox"><div>Support leads review 50 conversations from the test run.</div></li>
+    <li><input type="checkbox" checked><div>Handing over to a person works, with the whole conversation attached.</div></li>
+  </ul>
+
+  <h2>7 · After release</h2>
+  <ul>
+    <li><input type="checkbox" checked><div>Tracing on for every conversation.</div></li>
+    <li><input type="checkbox"><div>Continuous evaluation on a sample of live traffic, with an alert when a metric drops.</div></li>
+    <li><input type="checkbox"><div>Thumbs up and down in the chat, reviewed every Friday.</div></li>
+  </ul>
+
+  <footer>
+    Based on the evaluation, tracing and guardrail features described in
+    <a href="https://learn.microsoft.com/en-us/azure/ai-foundry/what-is-azure-ai-foundry">What is Microsoft Foundry?</a>
+    Contoso Outdoor is a fictitious company used for demos.
+  </footer>
+</main>
+</body>
+</html>

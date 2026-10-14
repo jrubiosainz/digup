@@ -109,6 +109,7 @@ final class AppController {
     /// follows without a relaunch. A folder another chosen one already searches is dropped (its files would be found
     /// twice), and so is a skip with nothing around it to skip from (`FolderSelection`).
     func applyFolders(_ roots: [URL], excluded: [URL]? = nil, types: [String]? = nil) {
+        guard !AppSettings.demo else { return log("folders: demo mode searches the sample files only") }
         let selection = FolderSelection(chosen: roots.map { AppSettings.folderURL($0.path).path },
                                         skipped: (excluded ?? model.settings.excludedFolders).map(\.path))
         let roots = selection.folders.map(AppSettings.folderURL)
@@ -134,6 +135,7 @@ final class AppController {
     }
 
     func setExcluded(_ folders: [URL]) {
+        guard !AppSettings.demo else { return }
         AppSettings.save(excludedFolders: folders)
         model.settings.excludedFolders = folders
         engine.setFolders(roots: model.settings.roots, excluded: folders, excludedTypes: model.settings.excludedTypes)
@@ -142,7 +144,7 @@ final class AppController {
     /// File extensions never to index ("heic, .txt"); files of those types already indexed leave the index.
     func setExcludedTypes(_ text: String) {
         let types = IndexOptions.extensions(text).sorted()
-        guard types != model.settings.excludedTypes else { return }
+        guard !AppSettings.demo, types != model.settings.excludedTypes else { return }
         AppSettings.save(excludedTypes: types)
         model.settings.excludedTypes = types
         engine.setFolders(roots: model.settings.roots, excluded: model.settings.excludedFolders, excludedTypes: types)
@@ -153,6 +155,7 @@ final class AppController {
     /// The code folders from now on (none turns code search off and deletes the code index), and those skipped in
     /// them, by `FolderSelection`'s rule.
     func applyCodeFolders(_ roots: [URL], excluded: [URL]) {
+        guard !AppSettings.demo else { return log("code folders: demo mode searches the sample code only") }
         let selection = FolderSelection(chosen: roots.map { AppSettings.folderURL($0.path).path },
                                         skipped: excluded.map(\.path))
         let roots = selection.folders.map(AppSettings.folderURL)
@@ -191,7 +194,7 @@ final class AppController {
         panel.allowsMultipleSelection = true
         panel.canCreateDirectories = false
         panel.prompt = prompt
-        panel.message = "Choose folders for DigUp to search."
+        panel.message = "Choose folders for Biblo to search."
         let finish = { (response: NSApplication.ModalResponse) in
             done(response == .OK ? panel.urls.map { AppSettings.folderURL($0.path) } : [])
         }
@@ -209,6 +212,47 @@ final class AppController {
     func chooseCodeFolders() {
         showSettings(.code)
         settingsWindow.addCodeFolders()
+    }
+
+    // MARK: Demo mode
+
+    /// Demo mode on or off from the next launch, which starts right away (`relaunch`); turning it on copies the sample
+    /// files to ~/Biblo Demo first. Nil when relaunching, else why it can't.
+    func setDemoMode(_ on: Bool) -> String? {
+        guard on != AppSettings.demo else { return nil }
+        if on {
+            do {
+                let copied = try DemoFiles.install()
+                log("demo: \(copied) sample files copied to \(tildePath(DemoFiles.folder.path))")
+            } catch {
+                log("demo: can't copy the sample files: \(error)")
+                return "Couldn't copy the sample files: \(error)"
+            }
+        }
+        AppSettings.save(demoMode: on)
+        log("demo mode \(on ? "on" : "off"): relaunching")
+        relaunch(showing: .general)
+        return nil
+    }
+
+    /// Opens a new copy of the app, which waits for this one to quit (it holds the hotkey and the index), and quits.
+    /// The new copy gets this launch's arguments, so a dev run stays one, and opens Settings at `tab`.
+    func relaunch(showing tab: SettingsTab) {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        configuration.arguments = Launch.ownArguments
+            + ["-relaunchAfter", String(getpid()), "-relaunchSettings", tab.rawValue]
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, error in
+            DispatchQueue.main.async {
+                guard let error else { return NSApp.terminate(nil) }
+                log("relaunch: \(error)")
+                AppSettings.save(demoMode: AppSettings.demo)
+                let alert = NSAlert()
+                alert.messageText = "Biblo couldn't restart"
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
+        }
     }
 
     // MARK: Hotkey
@@ -276,21 +320,19 @@ final class AppController {
         windowClosed()
     }
 
-    /// Brings a window forward, with the Dock icon showing while any window is open. Offscreen test runs only build it.
+    /// Brings a window forward. Offscreen test runs only build it.
     func present(_ window: NSWindow) {
         guard !Self.offscreen else { return }
-        NSApp.setActivationPolicy(.regular)
         bringAppToFront()
         window.makeKeyAndOrderFront(nil)
     }
 
-    /// A window closed: the Dock icon goes once none is left.
+    /// A window closed: once none is left, what the windows held goes (the Dock icon stays).
     func windowClosed() {
         DispatchQueue.main.async { [self] in
             let open = [searchWindow?.isVisible, settingsWindow?.isVisible, onboarding?.isVisible]
                 .contains { $0 == true }
             if !open {
-                NSApp.setActivationPolicy(.accessory)
                 Thumbnails.shared.clear()
                 Previews.shared.clear()
             }

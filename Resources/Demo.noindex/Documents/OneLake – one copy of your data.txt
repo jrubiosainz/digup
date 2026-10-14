@@ -1,0 +1,74 @@
+ONELAKE – ONE COPY OF YOUR DATA
+Contoso data team · explainer for the Microsoft Fabric demo · October 2026
+
+
+IN ONE SENTENCE
+
+OneLake is the single data lake that comes with every Microsoft Fabric tenant:
+one place for all of the organization's data, read and written by every Fabric
+workload without making copies.
+
+
+WHY IT MATTERS
+
+Before Fabric, every analytics tool kept its own copy of the data. The data
+warehouse had one, the data science team exported another, and every Power BI
+report imported a third. Copies drift, cost storage and need pipelines to stay
+in sync.
+
+OneLake turns that around. Data lands once, in open Delta Parquet tables, and
+every engine works on the same files:
+
+  - Data Engineering: Apache Spark notebooks and lakehouses
+  - Data Warehouse: T-SQL over the same Delta tables
+  - Real-Time Intelligence: streaming data and event processing
+  - Data Science: training models on the lake
+  - Power BI: reports in Direct Lake mode read the tables directly,
+    without importing them
+
+
+HOW IT IS ORGANIZED
+
+  tenant
+   └─ workspace (a team or a project, with its own permissions)
+       └─ item (a lakehouse, a warehouse, a semantic model…)
+           └─ tables and files
+
+There is one OneLake per tenant, the way there is one OneDrive per person.
+Underneath it is built on Azure Data Lake Storage (ADLS) Gen2, so tools that
+speak the ADLS APIs can read it too.
+
+
+BRINGING DATA IN WITHOUT MOVING IT
+
+Shortcuts
+  A shortcut is an object in OneLake that points to data stored somewhere else,
+  such as another workspace, Azure Data Lake Storage Gen2, Amazon S3 or Google
+  Cloud Storage. It behaves like a symbolic link: the data stays where it is,
+  and Fabric reads it as if it were local.
+
+Mirroring
+  Mirroring continuously replicates an existing database into OneLake, for
+  example Azure SQL Database, Azure Cosmos DB, Snowflake or Google BigQuery.
+  The copy stays in sync and is ready to query in Fabric.
+
+
+WHAT WE WILL SHOW ON THURSDAY
+
+  1. Orders and returns from the shop, mirrored into one lakehouse.
+  2. A Power BI report in Direct Lake mode: sales and returns by region.
+  3. Copilot in Fabric summarizing the report in plain language.
+
+Only Contoso sample data. No real customer data in the demo.
+
+
+SOURCES
+
+  What is Microsoft Fabric?
+  https://learn.microsoft.com/en-us/fabric/fundamentals/microsoft-fabric-overview
+
+  OneLake shortcuts
+  https://learn.microsoft.com/en-us/fabric/onelake/onelake-shortcuts
+
+  Mirroring in Microsoft Fabric
+  https://learn.microsoft.com/en-us/fabric/mirroring/overview

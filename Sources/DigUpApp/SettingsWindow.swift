@@ -80,7 +80,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         tabs.tabStyle = .toolbar
         tabs.transitionOptions = [.allowUserInteraction]
         for tab in SettingsTab.allCases {
-            let controller = NSHostingController(rootView: SettingsPane(tab: tab, state: state))
+            let controller = NSHostingController(rootView: SettingsPane(tab: tab, state: state).tint(Brand.accent))
             controller.sizingOptions = .preferredContentSize
             controller.title = tab.title   // the window takes the selected tab's title
             let item = NSTabViewItem(viewController: controller)
@@ -127,6 +127,9 @@ final class SettingsState {
     var launchAtLogin = false
     var loginProblem: String?
     var checksForUpdates = false
+    /// Demo mode's switch was flipped: the restart it needs waits for a yes.
+    var demoSwitch: Bool?
+    var demoProblem: String?
     @ObservationIgnored let app: AppController
     @ObservationIgnored var selectTab: (SettingsTab) -> Void = { _ in }
     @ObservationIgnored var addFolders: () -> Void = {}
@@ -210,7 +213,7 @@ private struct GeneralSettings: View {
                     state.launchAtLogin = state.app.launchesAtLogin
                 })) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Open DigUp when you log in")
+                        Text("Open Biblo when you log in")
                         Text(state.loginProblem ?? "So the shortcut always works.")
                             .font(.system(size: 11))
                             .foregroundStyle(state.loginProblem == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
@@ -218,29 +221,88 @@ private struct GeneralSettings: View {
                 }
             }
             Section {
-                Toggle(isOn: Binding(get: { state.checksForUpdates }, set: { on in
-                    state.app.updates.automaticallyChecks = on
-                    state.checksForUpdates = on
-                })) {
+                Toggle(isOn: Binding(get: { AppSettings.demo }, set: { state.demoSwitch = $0 })) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Check for updates automatically")
-                        Text("Once a day DigUp asks GitHub for its newest version; nothing about your files is sent. "
-                             + "Updates install with one click.")
+                        Text("Demo mode")
+                        Text(state.demoProblem ?? (AppSettings.demo
+                            ? "On: Biblo searches only the sample files in \(demoFolder). Your folders and their "
+                                + "index are as you left them."
+                            : "Biblo searches only a set of sample files, never your folders, in an index of its own: "
+                                + "for showing it to people, or recording it. The samples go in \(demoFolder)."))
                             .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(state.demoProblem == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                LabeledContent {
-                    Button("Check Now") { state.app.updates.checkNow() }
-                } label: {
-                    Text(state.model.updateAvailable.map { "DigUp \($0) is available" }
-                         ?? "DigUp \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
+            }
+            if Updates.hasFeed {
+                Section {
+                    Toggle(isOn: Binding(get: { state.checksForUpdates }, set: { on in
+                        state.app.updates.automaticallyChecks = on
+                        state.checksForUpdates = on
+                    })) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Check for updates automatically")
+                            Text("Once a day Biblo asks GitHub for its newest version; nothing about your files is sent. "
+                                 + "Updates install with one click.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    LabeledContent {
+                        Button("Check Now") { state.app.updates.checkNow() }
+                    } label: {
+                        Text(state.model.updateAvailable.map { "Biblo \($0) is available" }
+                             ?? "Biblo \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
+                    }
+                }
+            } else {
+                Section {
+                    LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
                 }
             }
         }
         .formStyle(.grouped)
         .scrollDisabled(true)
+        .confirmationDialog(state.demoSwitch == true ? "Restart Biblo in demo mode?" : "Turn off demo mode?",
+                            isPresented: Binding(get: { state.demoSwitch != nil },
+                                                 set: { if !$0 { state.demoSwitch = nil } })) {
+            Button(state.demoSwitch == true ? "Restart in Demo Mode" : "Restart") {
+                guard let on = state.demoSwitch else { return }
+                state.demoProblem = state.app.setDemoMode(on)
+            }
+        } message: {
+            Text(state.demoSwitch == true
+                 ? "Biblo restarts and searches only the sample files, which it copies to \(demoFolder). Your folders "
+                    + "and their index stay as they are."
+                 : "Biblo restarts and searches your folders again. The sample files stay in \(demoFolder).")
+        }
+    }
+
+    private var demoFolder: String { tildePath(DemoFiles.folder.path) }
+}
+
+/// In demo mode, atop Folders and Code: what's searched, and that your own folders are only set aside.
+private struct DemoNotice: View {
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "theatermasks")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(Brand.gradient)
+                .frame(width: 32)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Demo mode").font(.system(size: 13, weight: .semibold))
+                Text("Biblo is searching only the sample files in \(tildePath(DemoFiles.folder.path)). Your own folders "
+                     + "come back when you turn demo mode off in General.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([DemoFiles.folder]) }
+                .controlSize(.small)
+        }
     }
 }
 
@@ -250,13 +312,16 @@ private struct FolderSettings: View {
 
     var body: some View {
         Form {
+            if AppSettings.demo {
+                Section { DemoNotice() }
+            }
             Section {
                 IndexProgress(model: state.model) { state.app.engine.setPaused(!state.model.status.paused) }
             }
             Section {
                 if let summaries = state.summaries {
                     if summaries.isEmpty {
-                        Text("No folders yet. Add the ones DigUp should search.")
+                        Text("No folders yet. Add the ones Biblo should search.")
                             .foregroundStyle(.secondary)
                     }
                     ForEach(summaries) { summary in
@@ -275,6 +340,7 @@ private struct FolderSettings: View {
                     Spacer()
                 }
             }
+            .disabled(AppSettings.demo)
             Section {
                 ForEach(state.model.settings.excludedFolders, id: \.path) { folder in
                     HStack {
@@ -312,12 +378,14 @@ private struct FolderSettings: View {
                     Spacer()
                 }
             }
+            .disabled(AppSettings.demo)
             Section {
                 TypeExclusions(types: state.model.settings.excludedTypes) { state.app.setExcludedTypes($0) }
+                    .disabled(AppSettings.demo)
             } header: {
                 Text("Skip these file types")
             } footer: {
-                Text("DigUp only reads pictures, PDFs, documents (txt, md, rtf, docx, odt, html), audio and video here; "
+                Text("Biblo only reads pictures, PDFs, documents (txt, md, rtf, docx, odt, html), PowerPoint decks (pptx), audio and video here; "
                      + "code is read only in the code folders (the Code tab). Keys, certificates and password files are "
                      + "never read, nor are hidden folders like ~/.ssh.")
                     .font(.system(size: 11))
@@ -509,14 +577,14 @@ private struct StorageSettings: View {
                 }
             }
             Section("Privacy") {
-                Text("DigUp reads the folders you choose and keeps what it learns in its index, on this Mac. "
+                Text("Biblo reads the folders you choose and keeps what it learns in its index, on this Mac. "
                      + "It goes online only to download its model, once, and to check for updates (General), "
                      + "which sends nothing about your files.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Section {
-                Text("DigUp \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") · "
+                Text("Biblo \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") · "
                      + "EmbeddingGemma 2 by Google (Apache 2.0), run by llama.cpp (MIT).")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
@@ -535,6 +603,9 @@ private struct CodeSettings: View {
 
     var body: some View {
         Form {
+            if AppSettings.demo {
+                Section { DemoNotice() }
+            }
             Section {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Search your code").font(.system(size: 13, weight: .semibold))
@@ -578,6 +649,7 @@ private struct CodeSettings: View {
                     Spacer()
                 }
             }
+            .disabled(AppSettings.demo)
             Section {
                 Picker("Open code in", selection: Binding(get: { CodeEditor.current.id },
                                                           set: { state.app.setCodeEditor($0) })) {
@@ -596,7 +668,7 @@ private struct CodeSettings: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if state.model.hasCode {
+                if state.model.hasCode, !AppSettings.demo {
                     HStack {
                         Spacer()
                         Button("Turn Off Code Search…", role: .destructive) { turningOff = true }

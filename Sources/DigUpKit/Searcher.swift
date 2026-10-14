@@ -22,6 +22,8 @@ public struct SearchHit: Sendable {
     /// Code: the line to open at, in the stretch (`loc`…`locEnd`): where the name looked up is defined, or the first
     /// line with the query's words. Nil: the stretch's first line.
     public var focus: Double? = nil
+    /// It stood out in meaning: its best segment cleared this query's gate (`Searcher.search`'s `zGate` and `depth`).
+    public var byMeaning: Bool = false
 }
 
 /// Hybrid search: meaning (EmbeddingGemma's vectors) + words (FTS5).
@@ -113,8 +115,14 @@ public final class Searcher {
     public static let wordWeight = 2.0
     public static let codeWordWeight = 1.0
 
+    /// `depth`: how far the gate may come down when the best meaning match only just clears it (it stays within 1 of
+    /// the best). A query that many files answer about as well ("flores", a sport, birds) has no stand-out answer, and
+    /// its next matches are about as good as the ones over the gate: Biblo's panel lists each format best first, with
+    /// how sure each is. A stand-out answer (best ≥ gate + 1) keeps the gate, and with nothing over it nothing is found
+    /// (2026-10-12, the testbed's "flores": 2 → 9 files, all flowers; "xkqz wbrt" and "receta de paella" unchanged).
     public func search(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil, limit: Int = 20,
-                       zGate: Double = 2.0, wordWeight: Double? = nil, prefixLast: Bool = false) throws -> [SearchHit] {
+                       zGate: Double = 2.0, depth: Double = 0, wordWeight: Double? = nil,
+                       prefixLast: Bool = false) throws -> [SearchHit] {
         let wordWeight = wordWeight ?? (isCode ? Self.codeWordWeight : Self.wordWeight)
         if queryVector != nil, !vectorsLoaded { try reload() }
         let fileKind = self.fileKind
@@ -169,6 +177,8 @@ public final class Searcher {
         let lookup = Self.isLookup(terms) || identifier != nil
         let (meaningWeight, wordsWeight) = lookup ? (0.5, wordWeight * 2) : (1, wordWeight)
         let hinted = Self.kindHints(text)
+        let topZ = best.values.map { $0.z }.max() ?? -.infinity
+        let zGate = topZ >= zGate ? min(zGate, max(zGate - depth, topZ - 1)) : zGate
         var candidates = Set(best.filter { $0.value.z >= zGate }.keys)
         for (file, share) in coverage where share >= 0.5 { candidates.insert(file) }
         var scored: [Int64: Double] = [:]
@@ -232,7 +242,7 @@ public final class Searcher {
                                   keywordRank: keyword?.0, segment: segment, segmentID: segmentID, loc: loc,
                                   locEnd: locEnd,
                                   excerpt: snippet ?? storedExcerpt, modified: modified, size: size, info: info,
-                                  focus: focus))
+                                  focus: focus, byMeaning: semantic.map { $0.z >= zGate } ?? false))
         }
         return hits
     }

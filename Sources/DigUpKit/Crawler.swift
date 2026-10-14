@@ -16,10 +16,13 @@ public struct CrawlReport: Sendable {
     public var skipped: [String: Int] = [:]          // reason → files
     public var skippedFolders: [String: Int] = [:]   // reason → folders not walked into
     public var datasets: [String: Int] = [:]         // folder → files skipped as a dataset
+    /// The code projects found (not for the code index), outermost only: what's inside one is in a project too. The
+    /// app's watcher leaves out what changes inside them that a walk wouldn't keep (`ChangeFilter.setProjects`).
+    public var projectRoots: [String] = []
 }
 
 /// Walks the chosen folders and applies `Rules`. Reads metadata only, never file contents (except the 600-byte
-/// sniff that tells a real MPEG-TS video from a TypeScript file).
+/// sniff that tells a real MPEG-TS video from a TypeScript file, which skips files that are only in the cloud).
 ///
 /// For the code index (`IndexOptions.code`) it walks the code folders instead: code files only (`Rules.classifyCode`),
 /// in a git repo only those git keeps (`GitFiles`), and none in vendored or built folders.
@@ -27,8 +30,7 @@ public enum Crawler {
     public static func crawl(_ roots: [URL], options: IndexOptions) -> CrawlReport {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .contentTypeKey, .isUbiquitousItemKey,
-                                      .ubiquitousItemDownloadingStatusKey]
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .contentTypeKey]
         var report = CrawlReport()
         var projectRoots = Set<String>()
         var repos = GitRepos()
@@ -54,7 +56,7 @@ public enum Crawler {
             func visit(_ url: URL) {
                 let values = try? url.resourceValues(forKeys: Set(keys))
                 if values?.isDirectory == true, values?.isPackage != true {
-                    if let reason = Rules.skipReason(forFolder: url, home: home, excluded: skips)
+                    if let reason = Rules.skipReason(forFolder: url, home: home, excluded: skips, code: options.code)
                         ?? (options.code ? Rules.codeSkipReason(forFolder: url) : nil) {
                         walker.skipDescendants()
                         report.skippedFolders[reason, default: 0] += 1
@@ -82,10 +84,10 @@ public enum Crawler {
                         report.skipped["link or special file", default: 0] += 1
                         return
                     }
-                    // Reading a dataless placeholder (iCloud "Optimize Mac Storage", File Providers) downloads it.
-                    let dataless = info.st_flags & 0x4000_0000 != 0  // SF_DATALESS
-                    let inCloud = values?.isUbiquitousItem == true && values?.ubiquitousItemDownloadingStatus != .current
-                    if dataless || inCloud {
+                    // Reading a dataless placeholder (iCloud Drive, OneDrive: any File Provider) downloads it, and
+                    // the flag is all it takes to tell. Not the File Provider's own keys (isUbiquitousItem…): each
+                    // is a round trip to its daemon, for every file and folder, and a big OneDrive took minutes.
+                    if info.st_flags & 0x4000_0000 != 0 {  // SF_DATALESS
                         report.skipped["in the cloud, not downloaded", default: 0] += 1
                         return
                     }
@@ -135,6 +137,14 @@ public enum Crawler {
                 kept.append(file)
             }
         }
+        report.projectRoots = projectRoots.filter { folder in
+            var parent = (folder as NSString).deletingLastPathComponent
+            while parent.count > 1 {
+                if projectRoots.contains(parent) { return false }
+                parent = (parent as NSString).deletingLastPathComponent
+            }
+            return true
+        }.sorted()
 
         if !options.includeDatasets, !options.code {
             let datasets = Rules.datasetFolders(kept.map {
@@ -153,6 +163,24 @@ public enum Crawler {
         }
         report.candidates = kept
         return report
+    }
+
+    /// Whether `path` is a package (Photos' library, an app) or inside one, below the chosen `roots`: the walk never
+    /// goes in, so what changes there (Photos writes its library in the background all day) changes nothing it finds.
+    /// Only folders with an extension are asked, as that's what makes a folder a package bar rare exceptions; a root,
+    /// and what's above it, is walked whatever it is. Pass the roots as FSEvents reports them too (real paths).
+    public static func isInPackage(_ path: String, below roots: [String]) -> Bool {
+        var folder = path
+        while !roots.contains(where: { $0 == folder || FolderSelection.isInside($0, folder) }) {
+            if !(folder as NSString).pathExtension.isEmpty,
+               (try? URL(fileURLWithPath: folder).resourceValues(forKeys: [.isPackageKey]))?.isPackage == true {
+                return true
+            }
+            let parent = (folder as NSString).deletingLastPathComponent
+            guard parent != folder else { return false }
+            folder = parent
+        }
+        return false
     }
 }
 

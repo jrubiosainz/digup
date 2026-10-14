@@ -83,7 +83,9 @@ public enum Estimator {
                     estimate.laterSeconds += Double(all - first) * costs.pdfPage
                 }
             case .doc:
-                let all = max(1, min(options.maxChunks, Int(file.size / 2000)))
+                // A deck is mostly its pictures: a guess of a slide per 150 KB.
+                let all = SlideExtractor.isDeck(file.path) ? max(5, min(options.maxChunks, Int(file.size / 150_000)))
+                    : max(1, min(options.maxChunks, Int(file.size / 2000)))
                 let first = min(all, options.docStep)
                 estimate.docChunks += first
                 estimate.seconds += Double(first) * costs.docChunk

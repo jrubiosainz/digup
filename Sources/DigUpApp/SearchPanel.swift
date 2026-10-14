@@ -13,29 +13,32 @@ enum SearchPhase: Equatable {
     case codeOff     // "code:" without code folders: how to turn code search on
 }
 
-/// The hotkey panel: type, see results grouped by kind with the selected one previewed big on the right, and open /
-/// reveal / Quick Look / copy / drag them out.
+/// The hotkey panel: type, and what you described surfaces in one column per format (documents, screenshots, images,
+/// video, audio), each best match first. The column you're in widens and its selected result opens up into a card with
+/// a big preview; the arrows move through a column, ←→ / Tab / ⌘1–⌘5 between them. Open / reveal / Quick Look / copy
+/// / drag work on the selected result as before.
 ///
 /// Every keystroke shows keyword results at once (file names, OCR and document text, the last word as a prefix).
-/// After a short pause in typing the query is embedded and the full hybrid results replace them. Results far weaker
-/// than the best one are folded under "N weaker matches".
+/// After a short pause in typing the query is embedded and the full hybrid results replace them.
 @Observable
 final class SearchPanelController {
-    static let width: CGFloat = 780
-    static let listWidth: CGFloat = 330
-    static let fieldHeight: CGFloat = 56
-    static let expandedHeight: CGFloat = 480
-    static let rowsPerGroup = 6
+    static let width: CGFloat = 1160
+    static let fieldHeight: CGFloat = 68
+    static let expandedHeight: CGFloat = 620
+    static let cornerRadius: CGFloat = 24
     static let typingPause: Duration = .milliseconds(120)
-    /// The selectable row that folds and unfolds the weaker matches.
-    static let weakerToggle = "\u{0}weaker"
+    /// How far the meaning gate may come down for a query with no stand-out answer (`Searcher.search`'s `depth`), so
+    /// each format's column has its next-best matches too, each with how sure it is.
+    static let columnDepth = 0.5
 
     var query = "" {
         didSet { if query != oldValue { queryChanged() } }
     }
     private(set) var results = ResultSet.empty
-    private(set) var showWeaker = false
-    private(set) var selection: String?
+    /// The column the arrows move in: the best match's format, until you pick another.
+    private(set) var focusedKind: ResultGroupKind?
+    /// Each column's selected result, kept while you look at the others.
+    private(set) var cursors: [ResultGroupKind: String] = [:]
     private(set) var phase = SearchPhase.empty
     /// The query is a search of code ("code: …"): the code index, and nothing else.
     private(set) var isCode = false
@@ -57,7 +60,8 @@ final class SearchPanelController {
     @ObservationIgnored private var keyWindowObserver: NSObjectProtocol?
     @ObservationIgnored private var shownAt = Date.distantPast
     @ObservationIgnored private var activity: NSObjectProtocol?
-    /// True once ↑/↓ moved the selection since the last edit: then Space previews instead of typing a space.
+    /// True once ↑/↓ (or a click) moved the selection since the last edit: then Space previews instead of typing a
+    /// space, and ←→ change columns instead of moving the caret.
     @ObservationIgnored private var navigated = false
     @ObservationIgnored private var typedAt = Date()
     @ObservationIgnored private var noteTask: Task<Void, Never>?
@@ -75,14 +79,13 @@ final class SearchPanelController {
     var isVisible: Bool { window?.isVisible == true }
     var windowNumber: Int { window?.windowNumber ?? 0 }
     var isPreviewing: Bool { QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible }
-    /// The selectable rows in order: strong results group by group, the fold, then the weaker ones if unfolded.
-    var rowIDs: [String] {
-        results.groups.flatMap { $0.rows.map(\.id) }
-            + (results.weaker.isEmpty ? [] : [Self.weakerToggle])
-            + (showWeaker ? results.weaker.map(\.id) : [])
-    }
-    var rows: [ResultRow] { results.groups.flatMap(\.rows) + (showWeaker ? results.weaker : []) }
-    var selectedRow: ResultRow? { rows.first { $0.id == selection } }
+    /// Every result, column by column.
+    var rowIDs: [String] { rows.map(\.id) }
+    var rows: [ResultRow] { results.columns.flatMap(\.rows) }
+    var focusedColumn: ResultColumn? { results.columns.first { $0.kind == focusedKind && !$0.isEmpty } }
+    /// The selected result: the focused column's.
+    var selection: String? { focusedKind.flatMap { cursors[$0] } }
+    var selectedRow: ResultRow? { focusedColumn?.rows.first { $0.id == selection } }
 
     // MARK: Showing
 
@@ -145,7 +148,7 @@ final class SearchPanelController {
         let text = codeText ?? typed
         guard !typed.isEmpty else {
             results = .empty
-            selection = nil
+            clearSelection()
             phase = .empty
             resizeWindow()
             return
@@ -153,7 +156,7 @@ final class SearchPanelController {
         // "code:" alone, or without code folders: what to do instead of results.
         if code, !model.hasCode || text.isEmpty {
             results = .empty
-            selection = nil
+            clearSelection()
             phase = model.hasCode ? .codeHint : .codeOff
             resizeWindow()
             return
@@ -175,7 +178,7 @@ final class SearchPanelController {
             let vector = await engine.embedQuery(text, code: code)
             guard !Task.isCancelled, current == generation else { return }
             let searchStarted = Date()
-            let hits = await engine.search(text, vector: vector, prefixLast: false, code: code)
+            let hits = await engine.search(text, vector: vector, prefixLast: false, depth: Self.columnDepth, code: code)
             let searched = Date()
             try? await Task.sleep(until: showAt, tolerance: .milliseconds(1), clock: .continuous)
             guard !Task.isCancelled, current == generation else { return }
@@ -195,21 +198,31 @@ final class SearchPanelController {
     }
 
     private func show(_ hits: [SearchHit], query: String, phase: SearchPhase) {
-        // Code is one group: it gets the room of all of them.
-        results = ResultSet(hits, query: query, rowsPerGroup: isCode ? Self.rowsPerGroup * 3 : Self.rowsPerGroup)
-        if !navigated { showWeaker = false }
-        // Follow the top hit until you pick something with the arrow keys.
-        if !navigated || !rowIDs.contains(where: { $0 == selection }) {
-            selection = rowIDs.first
+        results = ResultSet(hits, query: query, code: isCode)
+        let columns = results.columns.filter { !$0.isEmpty }
+        if navigated, let kind = focusedKind, columns.contains(where: { $0.kind == kind }) {
+            // You picked something: keep it wherever it's still there; the other columns start at their best.
+            var kept: [ResultGroupKind: String] = [:]
+            for column in columns {
+                let id = cursors[column.kind]
+                kept[column.kind] = column.rows.contains { $0.id == id } ? id : column.rows.first?.id
+            }
+            cursors = kept
+        } else {
+            // Follow the best match (and each column's) until you pick something.
+            focusedKind = hits.first.map { ResultGroupKind($0.kind) } ?? columns.first?.kind
+            cursors = Dictionary(uniqueKeysWithValues: columns.compactMap { column in
+                column.rows.first.map { (column.kind, $0.id) }
+            })
         }
         self.phase = phase
         resizeWindow()
         if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible { updateQuickLook() }
     }
 
-    func toggleWeaker() {
-        showWeaker.toggle()
-        selection = Self.weakerToggle
+    private func clearSelection() {
+        focusedKind = nil
+        cursors = [:]
     }
 
     // MARK: Keys
@@ -283,10 +296,22 @@ final class SearchPanelController {
             moveSelection(by: event.keyCode == 125 ? 1 : -1)
             navigated = true
             return true
+        case 123, 124:  // ← →: another format, once you're among the results (before that they move the caret)
+            guard modifiers.isEmpty, navigated, focusedColumn != nil else { return false }
+            moveColumn(by: event.keyCode == 124 ? 1 : -1, wrap: false)
+            return true
+        case 48:  // Tab, ⇧Tab: another format, always
+            guard modifiers.isEmpty || modifiers == .shift, focusedColumn != nil else { return false }
+            moveColumn(by: modifiers == .shift ? -1 : 1, wrap: true)
+            navigated = true
+            return true
+        case 18, 19, 20, 21, 23:  // ⌘1…⌘5: that format's column (in its fixed place)
+            guard modifiers == .command, let number = [18: 0, 19: 1, 20: 2, 21: 3, 23: 4][event.keyCode],
+                  focusedColumn != nil else { return false }
+            focusColumn(at: number)
+            return true
         case 36, 76:  // ↩, enter
-            if selection == Self.weakerToggle, modifiers.isEmpty {
-                toggleWeaker()
-            } else if modifiers == .command {
+            if modifiers == .command {
                 revealSelected()
             } else if modifiers.isEmpty {
                 openSelected()
@@ -295,7 +320,7 @@ final class SearchPanelController {
             }
             return true
         case 49 where modifiers.isEmpty && (navigated || previewing) && selection != nil:  // Space
-            if selection == Self.weakerToggle { toggleWeaker() } else { toggleQuickLook() }
+            toggleQuickLook()
             return true
         case 16 where modifiers == .command:  // ⌘Y
             toggleQuickLook()
@@ -315,17 +340,49 @@ final class SearchPanelController {
         }
     }
 
+    /// ↑↓: up and down the focused column.
     func moveSelection(by step: Int) {
-        let ids = rowIDs
-        guard !ids.isEmpty else { return }
-        let index = selection.flatMap { ids.firstIndex(of: $0) } ?? -1
-        selection = ids[max(0, min(ids.count - 1, index + step))]
-        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible { updateQuickLook() }
+        guard let column = focusedColumn else { return }
+        let ids = column.rows.map(\.id)
+        let index = cursors[column.kind].flatMap { ids.firstIndex(of: $0) } ?? 0
+        cursors[column.kind] = ids[max(0, min(ids.count - 1, index + step))]
+        quickLookFollows()
+    }
+
+    /// ←→ / Tab: the next column with results (Tab wraps around).
+    func moveColumn(by step: Int, wrap: Bool) {
+        let kinds = results.columns.filter { !$0.isEmpty }.map(\.kind)
+        guard !kinds.isEmpty else { return }
+        let index = focusedKind.flatMap { kinds.firstIndex(of: $0) } ?? 0
+        let next = wrap ? (index + step + kinds.count) % kinds.count : max(0, min(kinds.count - 1, index + step))
+        focus(kinds[next])
+    }
+
+    /// ⌘1…⌘5: the column in that place, if it has results.
+    func focusColumn(at index: Int) {
+        guard results.columns.indices.contains(index), !results.columns[index].isEmpty else { return NSSound.beep() }
+        focus(results.columns[index].kind)
+    }
+
+    /// A column, at the result it had selected.
+    func focus(_ kind: ResultGroupKind) {
+        guard let column = results.columns.first(where: { $0.kind == kind }), !column.isEmpty else { return }
+        if cursors[kind] == nil { cursors[kind] = column.rows.first?.id }
+        focusedKind = kind
+        navigated = true
+        quickLookFollows()
     }
 
     func select(_ row: ResultRow) {
-        selection = row.id
+        let kind = ResultGroupKind(row.kind)
+        cursors[kind] = row.id
+        focusedKind = kind
         navigated = true
+        quickLookFollows()
+    }
+
+    private func quickLookFollows() {
+        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible { updateQuickLook() }
     }
 
     // MARK: Actions
@@ -348,7 +405,7 @@ final class SearchPanelController {
         pasteboard.clearContents()
         // As a file, like ⌘C in Finder: paste into a folder, a chat or a mail.
         pasteboard.writeObjects([row.url as NSURL])
-        flash("Copied \(row.name)")
+        flash("Copiado: \(row.name)")
     }
 
     /// The search window, with this query (and only one kind, if given): for a bigger look.
@@ -414,7 +471,7 @@ final class SearchPanelController {
 
     private func makeWindow() -> SearchPanelWindow {
         let window = SearchPanelWindow()
-        let hosting = NSHostingView(rootView: SearchPanelView(controller: self))
+        let hosting = NSHostingView(rootView: SearchPanelView(controller: self).tint(Brand.accent))
         hosting.sizingOptions = []
         window.contentView = Self.background(containing: hosting)
         self.window = window
@@ -422,16 +479,20 @@ final class SearchPanelController {
     }
 
     private var desiredHeight: CGFloat {
-        query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Self.fieldHeight : Self.expandedHeight
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return Self.fieldHeight }
+        // A short screen (a 13" laptop's 832 points) keeps a margin under the panel.
+        let screen = (window?.screen ?? NSScreen.main)?.visibleFrame.height ?? 900
+        return min(Self.expandedHeight, (screen * 0.78).rounded())
     }
 
-    /// Centered on the screen with the pointer, a little above the middle, like Spotlight.
+    /// Centered on the screen with the pointer, a little above the middle, like Spotlight; as wide as fits.
     private func placeWindow(_ window: NSWindow) {
         let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
         let area = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let top = area.maxY - area.height * 0.16
+        let top = area.maxY - area.height * 0.14
+        let width = min(Self.width, area.width - 48)
         let height = desiredHeight
-        window.setFrame(NSRect(x: area.midX - Self.width / 2, y: top - height, width: Self.width, height: height),
+        window.setFrame(NSRect(x: area.midX - width / 2, y: top - height, width: width, height: height),
                         display: true)
     }
 
@@ -452,7 +513,7 @@ final class SearchPanelController {
     /// Glass (or vibrancy before macOS 26) behind the SwiftUI content. The content sits beside the glass rather than
     /// inside it, since NSGlassEffectView resizes its contentView itself.
     private static func background(containing content: NSView) -> NSView {
-        let radius: CGFloat = 18
+        let radius = cornerRadius
         let backdrop: NSView
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
@@ -479,7 +540,7 @@ final class SearchPanelController {
 
     /// Draws the panel into a PNG (see `Snapshot`); the glass doesn't draw that way, so it's on the window color.
     func snapshot(to url: URL) throws {
-        try Snapshot.write(window, to: url, cornerRadius: 18)
+        try Snapshot.write(window, to: url, cornerRadius: Self.cornerRadius)
     }
 }
 

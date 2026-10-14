@@ -1,25 +1,28 @@
 {
   "fill" : {
-    "solid" : "srgb:0.07451,0.12549,0.10196,1.00000"
+    "linear-gradient" : [
+      "srgb:0.22745,0.14118,0.62745,1.00000",
+      "srgb:0.07843,0.04706,0.24314,1.00000"
+    ]
   },
   "groups" : [
     {
       "layers" : [
         {
-          "image-name" : "d-mark.svg",
-          "name" : "d-mark"
+          "image-name" : "ribbon.svg",
+          "name" : "ribbon"
         }
       ],
-      "name" : "D"
+      "name" : "Ribbon"
     },
     {
       "layers" : [
         {
-          "image-name" : "tiles.svg",
-          "name" : "tiles"
+          "image-name" : "column.svg",
+          "name" : "column"
         }
       ],
-      "name" : "Tiles"
+      "name" : "Column"
     }
   ],
   "supported-platforms" : {

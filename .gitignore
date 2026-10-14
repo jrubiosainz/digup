@@ -18,4 +18,20 @@ __pycache__/
 # Evals that name your own files
 evals/*.local.json
 
+# Demo mode's generated files and the official logos they show. Microsoft's and GitHub's terms and the macOS voices'
+# license limit republishing them (scripts/demo/assets/SOURCES.md), so only the hand-written text and code are in git:
+# download the logos as SOURCES.md says, then run scripts/make-demo.sh.
+/Resources/Demo.noindex/Audio/
+/Resources/Demo.noindex/Images/
+/Resources/Demo.noindex/Screenshots/
+/Resources/Demo.noindex/Slides/
+/Resources/Demo.noindex/Video/
+/Resources/Demo.noindex/Documents/*.pdf
+/Resources/Demo.noindex/Documents/*.rtf
+/Resources/Demo.noindex/Documents/*.docx
+/scripts/demo/assets/*.svg
+
+# The impeccable design skill's working files (its brief, sketches and caches); DESIGN.md and PRODUCT.md are what it decided
+/.impeccable/
+
 .DS_Store

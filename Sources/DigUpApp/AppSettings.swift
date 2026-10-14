@@ -12,6 +12,9 @@ import Foundation
 /// `-roots` takes one folder, several joined with ":", or a plist array. `-defaultsSuite` keeps what the app saves
 /// (onboarding's folders, a new hotkey) out of the real settings. With no roots the app indexes nothing and opens
 /// onboarding: a fresh install never starts reading someone's home folder on its own.
+///
+/// Demo mode (`demoMode`, switched in Settings → General) swaps the folders for the sample files (`DemoFiles`) and the
+/// index for one of their own, next to the real one; the saved folders stay as they were, untouched until it's off.
 nonisolated struct AppSettings: Sendable {
     var roots: [URL]
     /// Folders inside the roots that are never indexed.
@@ -38,11 +41,17 @@ nonisolated struct AppSettings: Sendable {
     var codeEditor: String?
     /// The code index catches up once the code folders have been quiet this long (`-codeQuietSeconds`, default 60).
     var codeQuietSeconds: Double
+    /// Searching the sample files instead of your folders (`demo`).
+    var demoMode: Bool
 
     static let supportDirectory = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/DigUp")
+        .appendingPathComponent("Library/Application Support/Biblo")
     static let defaultIndexDirectory = supportDirectory.appendingPathComponent("index.noindex")
     static let defaultHotkey = "cmd+shift+space"
+
+    /// Demo mode, as this launch runs it: Settings saves a change for the next launch and relaunches, since the
+    /// engine's folders and index are set when it starts. While it's on, nothing about folders is saved.
+    static let demo = defaults.bool(forKey: "demoMode")
 
     /// The battery switch, in onboarding and Settings.
     static let batteryTitle = "Index on battery power"
@@ -57,7 +66,7 @@ nonisolated struct AppSettings: Sendable {
 
     static func load() -> AppSettings {
         let defaults = Self.defaults
-        return AppSettings(
+        var settings = AppSettings(
             roots: folders(defaults, "roots"),
             excludedFolders: folders(defaults, "excludedFolders"),
             excludedTypes: (defaults.stringArray(forKey: "excludedTypes")
@@ -74,7 +83,20 @@ nonisolated struct AppSettings: Sendable {
             codeExcluded: folders(defaults, "codeExcludedFolders"),
             codeEditor: defaults.string(forKey: "codeEditor"),
             codeQuietSeconds: defaults.object(forKey: "codeQuietSeconds") == nil
-                ? 60 : max(1, defaults.double(forKey: "codeQuietSeconds")))
+                ? 60 : max(1, defaults.double(forKey: "codeQuietSeconds")),
+            demoMode: demo)
+        if demo {
+            // The samples' code goes to the code index only, as code in a chosen folder would.
+            settings.roots = [DemoFiles.folder]
+            settings.excludedFolders = [DemoFiles.code]
+            settings.excludedTypes = []
+            settings.codeRoots = [DemoFiles.code]
+            settings.codeExcluded = []
+            settings.onboarded = true
+            settings.indexDirectory = settings.indexDirectory.deletingLastPathComponent()
+                .appendingPathComponent("demo.noindex")
+        }
+        return settings
     }
 
     /// A list of folders: a plist array, or paths joined with ":" (the form launch arguments use).
@@ -92,14 +114,17 @@ nonisolated struct AppSettings: Sendable {
     }
 
     static func save(roots: [URL]) {
+        guard !demo else { return }
         defaults.set(roots.map(\.path), forKey: "roots")
     }
 
     static func save(excludedFolders: [URL]) {
+        guard !demo else { return }
         defaults.set(excludedFolders.map(\.path), forKey: "excludedFolders")
     }
 
     static func save(excludedTypes: [String]) {
+        guard !demo else { return }
         defaults.set(excludedTypes, forKey: "excludedTypes")
     }
 
@@ -112,16 +137,23 @@ nonisolated struct AppSettings: Sendable {
     }
 
     static func saveOnboarded() {
+        guard !demo else { return }
         defaults.set(true, forKey: "onboarded")
     }
 
     static func save(codeRoots: [URL], excluded: [URL]) {
+        guard !demo else { return }
         defaults.set(codeRoots.map(\.path), forKey: "codeRoots")
         defaults.set(excluded.map(\.path), forKey: "codeExcludedFolders")
     }
 
     static func save(codeEditor: String) {
         defaults.set(codeEditor, forKey: "codeEditor")
+    }
+
+    /// For the next launch (`demo`).
+    static func save(demoMode: Bool) {
+        defaults.set(demoMode, forKey: "demoMode")
     }
 
     /// Expands "~" and resolves symlinks, so crawled paths match the paths FSEvents reports.

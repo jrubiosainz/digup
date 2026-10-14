@@ -313,7 +313,8 @@ public final class Indexer {
         /// `read`: the pages read (from 0) of the PDF's `total`.
         case pdf(pages: [PDFExtractor.Page], read: Range<Int>, total: Int, title: String?)
         /// `chunks`: the ones in `read` (from 0) of the document's `total` (counted up to `IndexOptions.maxChunks` + 1).
-        case doc(chunks: [String], read: Range<Int>, total: Int, characters: Int)
+        /// A deck's chunks are its slides, and `pictures` the pictures on them.
+        case doc(chunks: [String], read: Range<Int>, total: Int, characters: Int, pictures: [SlideExtractor.Picture])
         case audio(pieces: [MediaPiece], duration: Double)
         case video(frames: [MediaPiece], sound: [MediaPiece], duration: Double)
         case code(CodeExtractor.File)
@@ -391,13 +392,23 @@ public final class Indexer {
                     return wanted
                 }, minText: options.minPageText, renderPixels: 1400, to: folder)
                 prepared.payload = .pdf(pages: read.pages, read: wanted, total: read.total, title: read.title)
+            case .doc where SlideExtractor.isDeck(url.path):
+                // A slide a chunk, so a match says which slide; the pictures on the slides are looked at too.
+                let deck = try SlideExtractor.read(url)
+                let slides = deck.slides.prefix(options.maxChunks + 1).map(\.text)
+                let read = (job.step ?? 0..<options.docStep).clamped(to: 0..<min(slides.count, options.maxChunks))
+                let pictures = SlideExtractor.pictures(of: deck, slides: read, maxPixel: 1024,
+                                                       minSide: options.minImageSide, limit: options.docStep,
+                                                       to: folder)
+                prepared.payload = .doc(chunks: Array(slides[read]), read: read, total: slides.count,
+                                        characters: slides.reduce(0) { $0 + $1.count }, pictures: pictures)
             case .doc:
                 // The chunks are cut the same way every time, so a later step goes on where the last one stopped.
                 let text = try DocExtractor.text(of: url)
                 let chunks = DocExtractor.chunks(text, limit: options.maxChunks + 1)
                 let read = (job.step ?? 0..<options.docStep).clamped(to: 0..<min(chunks.count, options.maxChunks))
                 prepared.payload = .doc(chunks: Array(chunks[read]), read: read, total: chunks.count,
-                                        characters: text.count)
+                                        characters: text.count, pictures: [])
             case .audio:
                 let (window, hop) = (options.audioWindow, options.audioHop)
                 let (pieces, duration) = try runBlocking {
@@ -456,9 +467,9 @@ public final class Indexer {
                 try images(batch, screenshot: screenshot, ready: ready, results: &results)
             case .pdf(let pages, let read, let total, let title):
                 results[0] = try pdf(batch[0], pages: pages, read: read, total: total, title: title, later: later)
-            case .doc(let chunks, let read, let total, let characters):
+            case .doc(let chunks, let read, let total, let characters, let pictures):
                 results[0] = try doc(batch[0], chunks: chunks, read: read, total: total, characters: characters,
-                                     later: later)
+                                     pictures: pictures, later: later)
             case .audio(let pieces, let duration):
                 results[0] = try audio(batch[0], pieces: pieces, duration: duration)
             case .video(let frames, let sound, let duration):
@@ -579,9 +590,11 @@ public final class Indexer {
         return (unread ? "partial" : "done", "\(span), \(imagePages.count) as images" + (ocr > 0 ? ", \(ocr) read by OCR" : ""))
     }
 
-    /// Chunks `read` of a document (all of a short one, a step of a long one), the way `pdf` reads pages.
-    private func doc(_ file: FileRecord, chunks: [String], read: Range<Int>, total: Int, characters: Int, later: Bool)
-        throws -> (String, String?) {
+    /// Chunks `read` of a document (all of a short one, a step of a long one), the way `pdf` reads pages. A deck's
+    /// chunks are its slides (one with no text keeps its place, so `loc` is the slide's number) and the pictures on them
+    /// are `pageImage` segments at their slide.
+    private func doc(_ file: FileRecord, chunks: [String], read: Range<Int>, total: Int, characters: Int,
+                     pictures: [SlideExtractor.Picture], later: Bool) throws -> (String, String?) {
         guard total > 0 else {
             try store.finish(file.id, state: "skipped", detail: "no text")
             return ("skipped", "no text")
@@ -590,18 +603,28 @@ public final class Indexer {
         // Text that's mostly digits (a data dump saved as .txt) gets keyword search only.
         let worded = chunks.indices.filter { SearchText.hasWords(chunks[$0]) }
         let vectors = worded.isEmpty ? [] : try fullWorker().embedTexts(worded.map {
-            Prompts.document(title: title, text: chunks[$0])
+            Prompts.document(title: title, text: String(chunks[$0].prefix(4000)))
         })
         let vector = Dictionary(uniqueKeysWithValues: zip(worded, vectors))
+        let pictureVectors = pictures.isEmpty ? []
+            : try fullWorker().embedImages(pictures.map(\.path), budget: options.photoBudget)
         let end = min(total, options.maxChunks)
         let unread = read.upperBound < end
         try store.db.transaction {
-            for (offset, chunk) in chunks.enumerated() {
+            for (offset, chunk) in chunks.enumerated() where !chunk.isEmpty {
                 try store.addSegment(file: file.id, kind: .chunk, modality: .text,
                                      loc: Double(read.lowerBound + offset + 1), excerpt: excerpt(chunk), text: chunk,
                                      vector: vector[offset])
             }
+            for (picture, embedding) in zip(pictures, pictureVectors) {
+                guard let vector = embedding.vector else { continue }
+                let text = chunks.indices.contains(picture.slide - read.lowerBound - 1)
+                    ? chunks[picture.slide - read.lowerBound - 1] : ""
+                try store.addSegment(file: file.id, kind: .pageImage, modality: .image, loc: Double(picture.slide),
+                                     excerpt: text.isEmpty ? nil : excerpt(text), vector: vector)
+            }
             var info = ["chunks": "\(end)", "chars": "\(characters)"]
+            if SlideExtractor.isDeck(file.path) { info["slides"] = "\(total)" }
             info["read_to"] = unread ? "\(read.upperBound)" : nil
             info["read_end"] = unread ? "\(end)" : nil
             let detail = unread ? "read to chunk \(read.upperBound) of \(end)" : end < total ? "the first \(end) chunks" : nil
@@ -610,7 +633,8 @@ public final class Indexer {
         let span = later ? "chunks \(read.lowerBound + 1)–\(read.upperBound) of \(end)"
             : unread ? "\(chunks.count) of \(end) chunks" : "\(chunks.count) chunks"
         return (unread ? "partial" : "done",
-                span + (worded.count < chunks.count ? ", \(chunks.count - worded.count) for keywords only" : ""))
+                span + (worded.count < chunks.count ? ", \(chunks.count - worded.count) for keywords only" : "")
+                    + (pictures.isEmpty ? "" : ", \(pictures.count) pictures"))
     }
 
     /// A code file's stretches of lines (a notebook's of cells), each embedded with the file's path in its repo as its

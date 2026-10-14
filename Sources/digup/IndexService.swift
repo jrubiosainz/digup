@@ -15,8 +15,11 @@ import Foundation
 /// The loop: sync, index what the sync just queued (if it's a few files: new files go first, on any power source),
 /// then the backfill if allowed; then the code index the same way (`--code-root`: its own sync, asked for with
 /// "sync code"); then the rest of long files (`Indexer.finishLongFiles`) under the same rules. Between batches it
-/// yields to a new sync, to stop, and to "backfill off". When it's done it keeps a warm worker for `linger` seconds
-/// (screenshots come in bursts), then exits.
+/// yields to a new sync, to stop, and to "backfill off"; a sync asked for meanwhile runs before it goes idle. When it's
+/// done it keeps a warm worker for `linger` seconds (screenshots come in bursts), then exits. `--sync` says which syncs
+/// it starts with (both unless told): the app passes only what's owed, so a change in a code folder doesn't walk all
+/// the other folders again, nor does plugging in for the backfill. Main syncs name the code projects they found
+/// ("projects"), for the app's watcher.
 ///
 /// Before the model has downloaded it only syncs (file names are searchable at once), says it's "waiting", and exits.
 /// Folders that aren't there (an unplugged drive) or can't be read are skipped, and what was indexed from them stays.
@@ -44,19 +47,21 @@ final class IndexService: @unchecked Sendable {
     private let linger: Double
 
     private let lock = NSLock()
-    private var syncRequested = true       // the first thing it does
-    private var codeSyncRequested = true
+    private var syncRequested: Bool       // at first: what `--sync` says
+    private var codeSyncRequested: Bool
     private var stopRequested = false
     private var backfillAllowed: Bool
     private let wake = DispatchSemaphore(value: 0)
 
     init(main: Part, code: Part?, model: SharedEmbedder, modelReady: @escaping () -> Bool, backfill: Bool,
-         newFilesLimit: Int, linger: Double) {
+         syncMain: Bool = true, syncCode: Bool = true, newFilesLimit: Int, linger: Double) {
         self.main = main
         self.code = code
         self.model = model
         self.modelReady = modelReady
         self.backfillAllowed = backfill
+        self.syncRequested = syncMain
+        self.codeSyncRequested = syncCode
         self.newFilesLimit = newFilesLimit
         self.linger = linger
     }
@@ -78,6 +83,10 @@ final class IndexService: @unchecked Sendable {
             finish()
             return 1
         }
+        // A part it doesn't start by syncing still sees only the folders that are there, and the app hears which aren't.
+        let (syncMain, syncCode) = lock.withLock { (syncRequested, codeSyncRequested) }
+        if !syncMain { _ = availableRoots(main) }
+        if let code, !syncCode { _ = availableRoots(code) }
         Thread.detachNewThread { [self] in readCommands() }
         var newFiles = Set<Int64>(), newCode = Set<Int64>()
         while true {
@@ -121,7 +130,8 @@ final class IndexService: @unchecked Sendable {
                 guard finishLongFiles() else { break }
                 if lock.withLock({ syncRequested || codeSyncRequested }) { continue }
             }
-            if code != nil, lock.withLock({ codeSyncRequested }) { continue }
+            // Asked for while it walked or embedded: now, rather than in another helper (nothing warm to wait with).
+            if lock.withLock({ !stopRequested && (syncRequested || code != nil && codeSyncRequested) }) { continue }
             emitCounts("idle")
             // Nothing warm to keep around: leave now. Else wait a little for more work.
             guard model.isRunning, waitForWork() else { break }
@@ -156,7 +166,7 @@ final class IndexService: @unchecked Sendable {
     /// A part's chosen folders that are there and readable right now; also what `pending` and the counts look at.
     private func availableRoots(_ part: Part) -> [URL] {
         let missing = part.roots.filter { !Arguments.isFolder($0) }
-        let unreadable = part.roots.filter { !missing.contains($0) && !Arguments.isReadable($0) }
+        let unreadable = part.roots.filter { !missing.contains($0) && !readable($0, code: part.code) }
         let report = (missing.map(\.path), unreadable.map(\.path))
         if unavailable[part.code].map({ $0 != report }) ?? !(missing.isEmpty && unreadable.isEmpty) {
             emit(["event": "missing", "folders": report.0, "unreadable": report.1, "code": part.code])
@@ -167,19 +177,37 @@ final class IndexService: @unchecked Sendable {
         return available
     }
 
+    /// `Arguments.isReadable`, telling the app when the look takes a while: macOS holds it for as long as its "may this
+    /// app read Downloads?" prompt waits (Downloads, Desktop, Documents; and again after every rebuild of an ad-hoc
+    /// signed app), so the app can say what it's waiting for instead of "Starting…". "opened" follows a slow look.
+    private func readable(_ folder: URL, code: Bool) -> Bool {
+        let started = Date(), slow = 1.5
+        let waiting = DispatchWorkItem { emit(["event": "opening", "folder": folder.path, "code": code]) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + slow, execute: waiting)
+        let readable = Arguments.isReadable(folder)
+        waiting.cancel()
+        if Date().timeIntervalSince(started) >= slow {
+            emit(["event": "opened", "folder": folder.path, "readable": readable, "code": code])
+        }
+        return readable
+    }
+
     private func sync(_ part: Part, into newFiles: inout Set<Int64>) {
         let started = Date()
         do {
             let summary = try part.indexer.sync(availableRoots(part))
             if summary.queued.count <= newFilesLimit { newFiles.formUnion(summary.queued) }
-            emitCounts("sync", [
+            var fields: [String: Any] = [
                 "code": part.code,
                 "new": newFiles.count,   // about to be indexed, whatever the power source
                 "added": summary.added, "changed": summary.changed, "moved": summary.moved,
                 "removed": summary.removed, "unchanged": summary.unchanged,
                 "ms": Int(Date().timeIntervalSince(started) * 1000),
                 "started": started.timeIntervalSince1970,   // the app checks its sync request came before this
-            ])
+            ]
+            // The app's watcher leaves out what changes inside them that a walk wouldn't keep (`ChangeFilter`).
+            if !part.code { fields["projects"] = summary.crawl.projectRoots }
+            emitCounts("sync", fields)
         } catch {
             emit(["event": "error", "message": "sync failed: \(error)", "code": part.code])
         }
@@ -201,8 +229,9 @@ final class IndexService: @unchecked Sendable {
                       "note": event.note ?? "", "code": part.code])
             })
             if !states.isEmpty {
-                emit(["event": "summary", "new": isNew, "states": states, "code": part.code,
-                      "ms": Int(Date().timeIntervalSince(started) * 1000)])
+                // With the counts: the app's status line is about what's left once the pass is over.
+                emitCounts("summary", ["new": isNew, "states": states, "code": part.code,
+                                       "ms": Int(Date().timeIntervalSince(started) * 1000)])
             }
             return true
         } catch {
@@ -223,8 +252,8 @@ final class IndexService: @unchecked Sendable {
                       "kind": step.kind.rawValue, "state": step.state, "seconds": step.seconds, "note": step.note ?? ""])
             })
             if !states.isEmpty {
-                emit(["event": "summary", "rest": true, "states": states,
-                      "ms": Int(Date().timeIntervalSince(started) * 1000)])
+                emitCounts("summary", ["rest": true, "states": states,
+                                       "ms": Int(Date().timeIntervalSince(started) * 1000)])
             }
             return true
         } catch {

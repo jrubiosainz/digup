@@ -1,18 +1,18 @@
 #!/bin/bash
-# Builds build.noindex/DigUp.app, signed with the hardened runtime (as releases are, so dev builds behave the same).
+# Builds build.noindex/Biblo.app, signed with the hardened runtime (as releases are, so dev builds behave the same).
 #   ./build.sh                       signed with the identity named in .sign-id (one line, gitignored), so macOS keeps
 #                                    folder permissions across rebuilds; ad-hoc without it (macOS then asks again
 #                                    after each build)
 #   SIGN_ID="<identity>" ./build.sh  this identity instead
 #   RELEASE=1 SIGN_ID="Developer ID Application: …" ./build.sh   plus the secure timestamp notarization needs
 #                                    (scripts/release.sh does that, then notarizes and makes the DMG)
-# There's no install step: run it from build.noindex (see scripts/dev-run.sh).
-# For testing in-app updates with a copy of its own (never the installed DigUp's settings or updates), these replace
+# scripts/install.sh installs the result in /Applications; scripts/dev-run.sh runs it against the testbed instead.
+# For testing in-app updates with a copy of its own (never the installed Biblo's settings or updates), these replace
 # Info.plist values: BUNDLE_ID, VERSION, BUILD_NUMBER, SPARKLE_FEED (the appcast URL), SPARKLE_KEY (the EdDSA public key).
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP_NAME="DigUp"
+APP_NAME="Biblo"
 # ".noindex" keeps Spotlight (and the Apps list) from showing this staging copy.
 APP="build.noindex/$APP_NAME.app"
 
@@ -29,15 +29,16 @@ swift build -c release --product DigUpApp
 swift build -c release --product digup
 BIN_DIR="$(swift build -c release --show-bin-path)"
 
-# The app icon ("One space", moss; Resources/AppIcon/README.md): macOS 26 draws the layered AppIcon.icon (compiled into
-# Assets.car), older macOS the .icns. Without the former, macOS 26 shows the icon shrunk inside a gray square.
+# The app icon ("La lupa y la cinta", a violet ribbon by a column of results; Resources/AppIcon/README.md): macOS 26
+# draws the layered AppIcon.icon (compiled into Assets.car), older macOS the .icns. Without the former, macOS 26 shows
+# the icon shrunk inside a gray square.
 ICON="Resources/AppIcon.icns"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 # The binary is DigUpApp in SwiftPM (it can't share a name with the `digup` CLI on a case-insensitive disk).
 cp "$BIN_DIR/DigUpApp" "$APP/Contents/MacOS/$APP_NAME"
-# The indexing helper lives in Helpers/: next to DigUp in MacOS/ it would collide on a case-insensitive disk.
+# The indexing helper lives in Helpers/: next to the app in MacOS/ it would collide on a case-insensitive disk.
 cp "$BIN_DIR/digup" "$APP/Contents/Helpers/digup"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 xcrun actool --compile "$APP/Contents/Resources" --platform macosx --target-device mac --minimum-deployment-target 14.0 \
@@ -45,6 +46,13 @@ xcrun actool --compile "$APP/Contents/Resources" --platform macosx --target-devi
   --development-region en "$PWD/Resources/AppIcon/AppIcon.icon" > /dev/null
 cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"   # over actool's plainer fallback: ours has simplified 16 and 32 px
 cp Resources/Acknowledgements.txt "$APP/Contents/Resources/Acknowledgements.txt"
+# Demo mode's sample files (scripts/make-demo.sh makes them; Settings → General copies them to ~/Biblo Demo). In the
+# repo they're in a .noindex folder, which neither Spotlight nor Biblo reads. ditto keeps their dates, so turning demo
+# mode on again copies only what changed.
+if [[ -d Resources/Demo.noindex ]]; then
+  ditto --norsrc --noextattr Resources/Demo.noindex "$APP/Contents/Resources/Demo"
+  find "$APP/Contents/Resources/Demo" -name .DS_Store -delete
+fi
 
 # Sparkle (in-app updates): the framework in Frameworks/, where the app's runpath looks. Its XPC services are for
 # sandboxed apps and its headers for building against it: left out.
@@ -57,7 +65,9 @@ PLIST="$APP/Contents/Info.plist"
 [[ -n "${BUNDLE_ID:-}" ]] && /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$PLIST"
 [[ -n "${VERSION:-}" ]] && /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
 [[ -n "${BUILD_NUMBER:-}" ]] && /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST"
-[[ -n "${SPARKLE_FEED:-}" ]] && /usr/libexec/PlistBuddy -c "Set :SUFeedURL $SPARKLE_FEED" "$PLIST"
+# Biblo ships without a feed (no SUFeedURL in Info.plist), so add it rather than set it.
+[[ -n "${SPARKLE_FEED:-}" ]] && { /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$PLIST" 2>/dev/null || true
+                                  /usr/libexec/PlistBuddy -c "Add :SUFeedURL string $SPARKLE_FEED" "$PLIST"; }
 [[ -n "${SPARKLE_KEY:-}" ]] && { /usr/libexec/PlistBuddy -c "Delete :SUPublicEDKey" "$PLIST" 2>/dev/null || true
                                  /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $SPARKLE_KEY" "$PLIST"; }
 

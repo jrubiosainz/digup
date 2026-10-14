@@ -9,11 +9,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
-        app.setActivationPolicy(.accessory)
+        // Always in the Dock, as a regular app. Info.plist still says LSUIElement, so an offscreen test run
+        // (`-debugOffscreen`) never shows a Dock icon or takes the focus.
+        app.setActivationPolicy(AppController.offscreen ? .accessory : .regular)
         app.run()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Relaunched (Settings → Demo mode): the copy that opened this one is still quitting.
+        if let pid = pid_t(UserDefaults.standard.string(forKey: "relaunchAfter") ?? "") { Launch.waitForExit(of: pid) }
         if isAlreadyRunning() {
             NSApp.terminate(nil)
             return
@@ -30,13 +34,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log("launch pid \(getpid()): roots \(settings.roots.map { tildePath($0.path) }) · "
             + "index \(tildePath(settings.indexDirectory.path)) · models \(tildePath(settings.modelsDirectory.path))")
         let (atLogin, why) = Launch.atLogin()   // while the open-application event is still the current one
-        let showWindow = !atLogin && !DebugHooks.drivesUI
-        log("launch: \(atLogin ? "at login" : "opened by hand") (\(why))\(showWindow ? ", showing the window" : "")")
+        let settingsTab = UserDefaults.standard.string(forKey: "relaunchSettings").flatMap { SettingsTab(rawValue: $0) }
+        let showWindow = !atLogin && !DebugHooks.drivesUI && settingsTab == nil
+        log("launch: \(settingsTab != nil ? "relaunched" : atLogin ? "at login" : "opened by hand") (\(why))"
+            + (settingsTab.map { ", showing Settings → \($0.title)" } ?? (showWindow ? ", showing the window" : ""))
+            + (settings.demoMode ? " · demo mode" : ""))
+        if settings.demoMode {
+            // A newer Biblo's samples, or ones gone from the folder, go back in before the engine reads it.
+            do {
+                let copied = try DemoFiles.install()
+                log("demo: \(copied) sample files copied to \(tildePath(DemoFiles.folder.path))")
+            } catch {
+                log("demo: can't copy the sample files: \(error)")
+            }
+        }
 
         let app = AppController(settings: settings)
         self.app = app
         NSApp.mainMenu = Self.makeMainMenu(app)
         app.start(showWindow: showWindow)
+        if let settingsTab { app.showSettings(settingsTab) }
         DebugHooks.run(app)
     }
 
@@ -55,19 +72,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .contains { $0 != NSRunningApplication.current }
     }
 
-    /// The menu bar while a window is open (the Dock icon shows then). It also gives text fields ⌘C/⌘V/⌘A/⌘Z.
+    /// The menu bar while Biblo is the active app. It also gives text fields ⌘C/⌘V/⌘A/⌘Z.
     private static func makeMainMenu(_ app: AppController) -> NSMenu {
         let mainMenu = NSMenu()
 
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About DigUp", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+        appMenu.addItem(withTitle: "About Biblo", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                         keyEquivalent: "")
-        appMenu.addItem(ActionMenuItem("Check for Updates…") { [weak app] in app?.updates.checkNow() })
+        if Updates.hasFeed {
+            appMenu.addItem(ActionMenuItem("Check for Updates…") { [weak app] in app?.updates.checkNow() })
+        }
         appMenu.addItem(.separator())
         appMenu.addItem(ActionMenuItem("Settings…", key: ",") { [weak app] in app?.showSettings() })
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide DigUp", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        appMenu.addItem(withTitle: "Quit DigUp", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Hide Biblo", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "Quit Biblo", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(ActionMenuItem("New Search", key: "n") { [weak app] in app?.showSearchWindow(query: "") })
@@ -96,8 +115,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// How DigUp was launched. At login (its login item) it stays in the menu bar; opened by hand (Finder, Spotlight,
-/// Launchpad, after an update) it shows its window, so opening it never looks like nothing happened.
+/// How Biblo was launched. At login (its login item) it starts without a window; opened by hand (the Dock, Finder,
+/// Spotlight, Launchpad, after an update) it shows its window, so opening it never looks like nothing happened.
 enum Launch {
     /// Whether this is the launch at login, and what says so. Call it while the app finishes launching: the
     /// open-application event is still the current one then.
@@ -126,6 +145,23 @@ enum Launch {
             if latest.map({ time > $0 }) ?? true { latest = time }
         }
         return latest
+    }
+
+    /// The arguments this launch was given, less those a relaunch sets itself (`AppController.relaunch`) and demo
+    /// mode's switch (the new launch reads the saved one).
+    static var ownArguments: [String] {
+        let own: Set = ["-relaunchAfter", "-relaunchSettings", "-demoMode"]
+        var kept: [String] = [], arguments = Array(ProcessInfo.processInfo.arguments.dropFirst())[...]
+        while let argument = arguments.popFirst() {
+            if own.contains(argument) { _ = arguments.popFirst() } else { kept.append(argument) }
+        }
+        return kept
+    }
+
+    /// Blocks until process `pid` has exited, for at most `limit` seconds.
+    static func waitForExit(of pid: pid_t, limit: TimeInterval = 10) {
+        let deadline = Date().addingTimeInterval(limit)
+        while kill(pid, 0) == 0, Date() < deadline { usleep(50_000) }
     }
 
     /// A fixed-size C string field of a utmpx entry.

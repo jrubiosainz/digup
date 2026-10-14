@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+<defs><linearGradient id="pg" x1="0" y1="388" x2="0" y2="636" gradientUnits="userSpaceOnUse">
+  <stop offset="0" stop-color="#6C6FC4"/><stop offset="1" stop-color="#33306E"/>
+</linearGradient></defs>
+<g transform="scale(1.242718) translate(-100 -100)">
+  <rect x="400" y="236" width="360" height="30" rx="15" fill="#FFF" opacity="0.05"/>
+  <rect x="408" y="240" width="22" height="22" rx="7" fill="#FFF" opacity="0.26"/>
+  <rect x="442" y="246" width="170" height="10" rx="5" fill="#FFF" opacity="0.26"/>
+  <rect x="380" y="290" width="400" height="46" rx="23" fill="#FFF" opacity="0.08"/>
+  <rect x="390" y="295" width="36" height="36" rx="10" fill="#FFF" opacity="0.42"/>
+  <rect x="442" y="306" width="208" height="14" rx="7" fill="#FFF" opacity="0.42"/>
+  <rect x="380" y="688" width="400" height="46" rx="23" fill="#FFF" opacity="0.08"/>
+  <rect x="390" y="693" width="36" height="36" rx="10" fill="#FFF" opacity="0.42"/>
+  <rect x="442" y="704" width="208" height="14" rx="7" fill="#FFF" opacity="0.42"/>
+  <rect x="400" y="758" width="360" height="30" rx="15" fill="#FFF" opacity="0.05"/>
+  <rect x="408" y="762" width="22" height="22" rx="7" fill="#FFF" opacity="0.26"/>
+  <rect x="442" y="768" width="170" height="10" rx="5" fill="#FFF" opacity="0.26"/>
+  <rect x="360" y="362" width="440" height="300" rx="52" fill="#F5F3FD"/>
+  <rect x="386" y="388" width="204" height="248" rx="30" fill="url(#pg)"/>
+  <circle cx="540" cy="446" r="22" fill="#F6F1FF" opacity="0.92"/>
+  <path d="M386 590 L450 522 L494 566 L522 540 L590 602 V606 A30 30 0 0 1 560 636 H416 A30 30 0 0 1 386 606 Z" fill="#8F8FD8"/>
+  <path d="M386 612 L432 584 L486 636 H416 A30 30 0 0 1 386 606 Z" fill="#B9B6EC"/>
+  <rect x="616" y="406" width="156" height="24" rx="12" fill="#231D45"/>
+  <rect x="616" y="452" width="110" height="20" rx="10" fill="#6A4BF2"/>
+  <rect x="616" y="494" width="136" height="16" rx="8" fill="#CEC8E6"/>
+  <rect x="616" y="526" width="90" height="16" rx="8" fill="#CEC8E6"/>
+</g>
+</svg>

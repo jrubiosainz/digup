@@ -2,6 +2,20 @@ import AppKit
 import DigUpKit
 import SwiftUI
 
+// Biblo · contrato de diseño del panel (impeccable; también en .impeccable/brief.md y DESIGN.md)
+// TESIS: encontrar es reconocer. Biblo no da una lista: abre cada formato por donde más probable es que esté.
+// MUNDO PROPIO: Biblos, la ciudad fenicia que dio nombre al libro; tu Mac como biblioteca. Cristal del sistema con un
+//   velo violeta quieto (`Backdrop`: violeta, pervinca y orquídea, los de Foundry), y una sola cinta de registro violeta
+//   que marca dónde está. La lupa es un disco violeta al final de la barra, nunca al principio.
+// HISTORIA: escribes como lo recuerdas → cada formato abre su estante → la cinta cae por cada columna, ancha donde
+//   más acierta → al bajar, cada hallazgo sale del estante y se abre grande.
+// PRIMERA VISTA: la barra; columnas por formato en orden fijo; la activa ancha, con su mejor hallazgo abierto y su
+//   % de acierto.
+// FORMA: columnas con muelle, lupa vertical, cinta que adelgaza con la probabilidad; SF Pro con cifras tabulares.
+//   Nada de neón, ni texto en degradado, ni crema con serifa, ni rótulos mono en mayúsculas.
+
+/// The hotkey panel: the search field between Biblo's ribbon, hanging from the panel's top edge, and the search badge;
+/// one column per format underneath (`ColumnsView`), and a footer saying what the keys do. The panel speaks Spanish.
 struct SearchPanelView: View {
     @Bindable var controller: SearchPanelController
 
@@ -9,50 +23,65 @@ struct SearchPanelView: View {
         VStack(spacing: 0) {
             header
             if controller.phase != .empty {
-                Divider()
+                Divider().opacity(0.5)
                 content
                     .frame(maxHeight: .infinity)
-                Divider()
+                Divider().opacity(0.5)
                 footer
             }
         }
-        .frame(width: SearchPanelController.width)
-        .frame(maxHeight: .infinity, alignment: .top)
-        // Glass alone is too see-through over busy backgrounds.
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.75))
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // Glass alone is too see-through over busy backgrounds; Biblo's violet glows through what covers it.
+        .background {
+            ZStack {
+                Color(nsColor: .windowBackgroundColor).opacity(0.75)
+                Backdrop()
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: SearchPanelController.cornerRadius, style: .continuous))
     }
 
     private var header: some View {
-        HStack(spacing: 11) {
-            // A search of code shows it: the field's magnifier becomes code's mark.
-            Image(systemName: controller.isCode ? FileKind.code.symbol : "magnifyingglass")
-                .font(.system(size: controller.isCode ? 17 : 20, weight: .semibold))
-                .foregroundStyle(Brand.gradient)
-                .frame(width: 24)
-                .help(controller.isCode ? "Searching your code" : "")
+        HStack(spacing: 14) {
+            RibbonMark(hang: hang)
+                .frame(width: 24, height: SearchPanelController.fieldHeight, alignment: .top)
             // With code search on, one example is code's: nothing else in the panel shows "code:".
-            SearchField(text: $controller.query, fontSize: 22,
+            SearchField(text: $controller.query, fontSize: 24,
                         placeholder: controller.model.hasCode
-                            ? "Describe it: “zebra in a video”, “code: retry with backoff”…"
-                            : "Describe it: “payment error screenshot”, “zebra in a video”…") {
+                            ? "Descríbelo como lo recuerdes: «pingüino en un vídeo», «code: reintentar con espera»…"
+                            : "Descríbelo como lo recuerdes: «receta de paella», «pingüino en un vídeo»…",
+                        label: "Buscar") {
                 controller.field = $0
             }
             if controller.phase == .words, controller.encoder == .starting {
                 ProgressView().controlSize(.small)
             }
-            if let activity = controller.model.activityBadge {
+            if let activity = controller.model.panelBadge {
                 Text(activity)
                     .font(.system(size: 11, weight: .medium).monospacedDigit())
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
                     .background(Capsule().fill(Color.primary.opacity(0.07)))
-                    .help(controller.model.statusLine)
+                    .help(controller.model.spanishStatusLine)
             }
+            // A search of code shows it: code's mark in the badge.
+            SearchBadge(code: controller.isCode, side: 34) { focusField() }
         }
-        .padding(.horizontal, 18)
+        .padding(.leading, 22)
+        .padding(.trailing, 16)
         .frame(height: SearchPanelController.fieldHeight)
+    }
+
+    private func focusField() {
+        guard let field = controller.field else { return }
+        field.window?.makeFirstResponder(field)
+    }
+
+    /// How far the ribbon hangs: short with nothing found, swaying while meaning search warms up, long over results.
+    private var hang: RibbonMark.Hang {
+        if controller.phase == .words, controller.encoder == .starting { return .swaying }
+        return controller.results.isEmpty ? .short : .long
     }
 
     @ViewBuilder private var content: some View {
@@ -61,43 +90,26 @@ struct SearchPanelView: View {
         } else if controller.results.isEmpty {
             VStack(spacing: 8) {
                 if controller.phase == .words {
-                    Text("Searching…").foregroundStyle(.secondary)
+                    Text("Buscando…").foregroundStyle(.secondary)
                 } else if !controller.model.hasFolders {
-                    Text("No folders chosen yet").font(.system(size: 15, weight: .semibold))
-                    Text("DigUp only searches the folders you pick.").foregroundStyle(.secondary)
-                    Button("Choose Folders…") { controller.chooseFolders() }
+                    Text("Aún no hay carpetas").font(.system(size: 15, weight: .semibold))
+                    Text("Biblo solo busca en las carpetas que elijas.").foregroundStyle(.secondary)
+                    Button("Elegir carpetas…") { controller.chooseFolders() }
                         .padding(.top, 4)
                 } else if controller.isCode {
-                    Text("No good matches in your code").font(.system(size: 15, weight: .semibold))
-                    Text("Try saying what the code does, or a name that's in it.").foregroundStyle(.secondary)
+                    Text("Nada parecido en tu código").font(.system(size: 15, weight: .semibold))
+                    Text("Prueba a decir qué hace el código, o un nombre que aparezca en él.")
+                        .foregroundStyle(.secondary)
                 } else {
-                    Text("No good matches").font(.system(size: 15, weight: .semibold))
-                    Text("Try what you'd see or hear in it, or words you remember from it.")
+                    Text("Nada parecido en tus carpetas").font(.system(size: 15, weight: .semibold))
+                    Text("Prueba con lo que se veía o se oía, o con palabras que recuerdes.")
                         .foregroundStyle(.secondary)
                 }
             }
             .font(.system(size: 13))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            HStack(spacing: 0) {
-                ResultList(controller: controller)
-                    .frame(width: SearchPanelController.listWidth)
-                Divider()
-                Group {
-                    if let row = controller.selectedRow {
-                        VStack(alignment: .leading, spacing: 10) {
-                            PreviewPane(row: row, imageSize: CGSize(width: 410, height: 214),
-                                        open: { controller.openSelected() })
-                            PreviewActions(row: row, open: { controller.openSelected() },
-                                           reveal: { controller.revealSelected() }, controlSize: .small)
-                        }
-                    } else if controller.selection == SearchPanelController.weakerToggle {
-                        WeakerExplainer(count: controller.results.weaker.count, expanded: controller.showWeaker)
-                    }
-                }
-                .padding(16)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            }
+            ColumnsView(controller: controller)
         }
     }
 
@@ -111,212 +123,148 @@ struct SearchPanelView: View {
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
         }
-        .font(.system(size: 11))
-        .padding(.horizontal, 16)
-        .frame(height: 30)
+        .font(.system(size: 11).monospacedDigit())
+        .padding(.horizontal, 20)
+        .frame(height: 32)
     }
 
-    /// The keys, saying where ↩ and Space go for a page or moment: "↩ Open at 0:06   ␣ Quick Look at 0:06", and for
-    /// code, at which line: "↩ Open in Zed at line 12".
+    /// The keys, saying where ↩ goes: "↩ abrir en 0:06", and for code at which line: "↩ abrir en Zed, línea 12".
     private var keysText: String {
         let row = controller.selectedRow
-        if let row, row.kind == .code {
-            let line = row.segment == .lines ? " at line \(row.codeLine)" : ""
-            return "↩ \(row.openTitle)\(line)   ⌘↩ Reveal   ␣ Quick Look   ⌘C Copy"
-        }
-        let place = row?.jump.map { " at \($0)" } ?? ""
-        return "↩ \(row?.openTitle ?? "Open")   ⌘↩ Reveal   ␣ Quick Look\(place)   ⌘C Copy"
+        var open = "↩ " + (row?.spanishOpenTitle ?? "abrir")
+        if let row, row.kind == .code, row.segment == .lines { open += ", línea \(row.codeLine)" }
+        let formats = controller.results.columns.count { !$0.isEmpty } > 1 ? "⇥ otro formato   " : ""
+        return "↑↓ recorrer   \(formats)\(open)   ␣ vista rápida   ⌘↩ Finder   ⌘C copiar"
     }
 
     private var statusText: String {
         if let note = controller.note { return note }
         switch controller.phase {
         case .words:
-            return controller.encoder == .starting ? "Matching words; meaning search is warming up…" : "Matching words…"
+            return controller.encoder == .starting ? "Buscando por palabras; el significado llega enseguida…"
+                                                   : "Buscando por palabras…"
         case .wordsOnly:
-            return controller.model.meaningUnavailable ?? "Words only: meaning search isn't available"
+            return controller.model.panelMeaningUnavailable
+                ?? "Solo por palabras: la búsqueda por significado no está disponible"
         case .codeHint, .codeOff:
-            return controller.phase == .codeOff ? "Code search is off" : "Searching your code"
+            return controller.phase == .codeOff ? "La búsqueda de código está apagada" : "Buscando en tu código"
         case .meaning, .empty:
             if controller.isCode, let indexing = controller.model.status.code.indexing, indexing.total > 0 {
-                return "Still reading code (\(Int(Double(indexing.done) / Double(indexing.total) * 100))%): some isn't in yet"
+                let percent = Int(Double(indexing.done) / Double(indexing.total) * 100)
+                return "Aún leyendo código (\(percent) %): falta una parte"
             }
-            if !controller.isCode, let caveat = controller.model.resultsCaveat { return caveat }
-            let count = controller.results.strongRows.count
+            if !controller.isCode, let caveat = controller.model.panelCaveat { return caveat }
+            let columns = controller.results.columns.filter { !$0.isEmpty }
+            let strong = columns.reduce(0) { $0 + $1.strong }
             let weaker = controller.results.weaker.count
-            return (count == 1 ? "1 result" : "\(count) results") + (controller.isCode ? " in your code" : "")
-                + (weaker > 0 ? " · \(weaker) weaker" : "")
+            let formats = columns.count { $0.strong > 0 }
+            let found = strong == 1 ? "1 hallazgo" : "\(strong) hallazgos"
+            let place = controller.isCode ? " en tu código"
+                : formats == 1 ? " en 1 formato" : " en \(formats) formatos"
+            return found + place + (weaker > 0 ? " · \(weaker) con menos acierto" : "")
         }
     }
 }
 
-private struct ResultList: View {
-    let controller: SearchPanelController
+extension AppModel {
+    /// `activityBadge`, in the panel's words: "Indexando 42 %".
+    var panelBadge: String? {
+        if download.isActive { return "Descargando modelo · \(Int(download.fraction * 100)) %" }
+        if case .indexing(let done, let total) = status.activity, total > 0 {
+            return "Indexando \(Int(Double(done) / Double(total) * 100)) %"
+        }
+        if status.paused, status.pending > 0 { return "Indexado en pausa" }
+        return nil
+    }
 
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 1) {
-                    ForEach(controller.results.groups) { group in
-                        GroupHeader(title: group.kind.title)
-                        ForEach(group.rows) { row in
-                            PanelRow(row: row, selected: row.id == controller.selection)
-                                .id(row.id)
-                                .overlay(FileDragArea(url: row.url, openTitle: row.openTitle,
-                                                      onClick: { controller.select(row) },
-                                                      onOpen: {
-                                                          controller.select(row)
-                                                          controller.openSelected()
-                                                      }))
-                        }
-                        if group.total > group.rows.count {
-                            Button {
-                                controller.openInWindow(group.kind)
-                            } label: {
-                                Text("Show all \(group.total) \(group.kind.title.lowercased())…")
-                                    .font(.system(size: 11.5, weight: .medium))
-                                    .foregroundStyle(Color.accentColor)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 3)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Open them in the DigUp window (⌘O shows everything)")
-                        }
-                    }
-                    if !controller.results.weaker.isEmpty {
-                        WeakerRow(count: controller.results.weaker.count, expanded: controller.showWeaker,
-                                  selected: controller.selection == SearchPanelController.weakerToggle)
-                            .id(SearchPanelController.weakerToggle)
-                            .onTapGesture { controller.toggleWeaker() }
-                            .padding(.top, 6)
-                        if controller.showWeaker {
-                            ForEach(controller.results.weaker) { row in
-                                PanelRow(row: row, selected: row.id == controller.selection)
-                                    .id(row.id)
-                                    .opacity(0.85)
-                                    .overlay(FileDragArea(url: row.url, openTitle: row.openTitle,
-                                                          onClick: { controller.select(row) },
-                                                          onOpen: {
-                                                              controller.select(row)
-                                                              controller.openSelected()
-                                                          }))
-                            }
-                        }
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.bottom, 8)
+    /// `meaningUnavailable`, in the panel's words.
+    var panelMeaningUnavailable: String? {
+        guard !download.isReady else { return nil }
+        if download.isActive {
+            return "Solo por palabras hasta que se descargue el modelo (\(Int(download.fraction * 100)) %)"
+        }
+        return "Solo por palabras: el modelo no está descargado"
+    }
+
+    /// `resultsCaveat`, in the panel's words.
+    var panelCaveat: String? {
+        if let panelMeaningUnavailable { return panelMeaningUnavailable }
+        if case .indexing(let done, let total) = status.activity, total > 0 {
+            return "Aún indexando (\(Int(Double(done) / Double(total) * 100)) %): faltan archivos"
+        }
+        if status.pending > 0 {
+            return status.pending == 1 ? "Falta 1 archivo por indexar"
+                : "Faltan \(status.pending.formatted(.number.locale(ResultRow.spanish))) archivos por indexar"
+        }
+        return nil
+    }
+
+    /// `statusLine`, in Spanish: the search window's status bar and the panel's activity tooltip.
+    var spanishStatusLine: String {
+        let status = self.status
+        guard hasFolders else { return "Aún no hay carpetas" }
+        if let folder = status.opening { return "Esperando acceso a \((folder as NSString).lastPathComponent)" }
+        switch status.activity {
+        case .starting: return "Arrancando…"
+        case .failed(let problem): return "⚠︎ \(problem)"
+        case .syncing: return "Revisando carpetas…"
+        case .indexing(let done, let total):
+            return "Indexando \(Self.percent(done, of: total)) % · \(Self.number(done)) de \(Self.number(total))"
+        case .finishing(let done, let total, let files):
+            let which = files == 1 ? "1 archivo largo" : files > 0 ? "\(Self.number(files)) archivos largos"
+                : "los archivos largos"
+            return "Terminando de leer \(which) · \(Self.percent(done, of: total)) %"
+        case .idle:
+            if let line = spanishDownloadLine { return line }
+            if let code = status.code.indexing, code.total > 0 {
+                return "Indexando código \(Self.percent(code.done, of: code.total)) % · "
+                    + "\(Self.number(code.done)) de \(Self.number(code.total))"
             }
-            .onChange(of: controller.selection) { _, id in
-                if let id { proxy.scrollTo(id) }
+            let reason = status.waitingFor.map(Self.spanishWaiting)
+            if status.pending > 0 {
+                let waiting = status.pending == 1 ? "1 archivo en espera" : "\(Self.number(status.pending)) archivos en espera"
+                if status.paused { return "En pausa · \(waiting)" }
+                if let reason { return "\(waiting) · \(reason)" }
+                return status.pending == 1 ? "Falta 1 archivo por indexar"
+                    : "Faltan \(Self.number(status.pending)) archivos por indexar"
             }
-        }
-    }
-}
-
-struct GroupHeader: View {
-    let title: String
-
-    var body: some View {
-        Text(title.uppercased())
-            .font(.system(size: 10, weight: .semibold))
-            .tracking(0.6)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 10)
-            .padding(.top, 10)
-            .padding(.bottom, 3)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityAddTraits(.isHeader)
-    }
-}
-
-/// A result in the panel's list: thumbnail, name with the page or moment, and the matched words (or the folder).
-private struct PanelRow: View {
-    let row: ResultRow
-    let selected: Bool
-
-    var body: some View {
-        HStack(spacing: 10) {
-            // Code's thumbnail would be a page of tiny text: its file type's icon says more.
-            ThumbnailView(url: row.url, side: 36, iconOnly: row.kind == .code)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(row.title)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    if let place = row.place { PlaceBadge(text: place) }
-                }
-                if let excerpt = row.excerpt, row.matchedWords, row.kind != .code {
-                    Text(highlighted(excerpt, size: 11))
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else {
-                    Text(row.folder)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                }
+            if status.unfinished > 0 {
+                let rest = status.unfinished == 1 ? "1 archivo largo por terminar"
+                    : "\(Self.number(status.unfinished)) archivos largos por terminar"
+                if status.paused { return "En pausa · \(rest)" }
+                if let reason { return "\(rest) · \(reason)" }
             }
-            Spacer(minLength: 0)
+            let indexed = status.searchable == 1 ? "1 archivo indexado" : "\(Self.number(status.searchable)) archivos indexados"
+            return indexed + (status.paused ? " · en pausa" : "")
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(selected ? Color.accentColor.opacity(0.24) : Color.clear))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(row.kind.title), \(row.name), \(row.reason)")
-        .accessibilityAddTraits(selected ? .isSelected : [])
     }
-}
 
-/// "▸ 14 weaker matches", selectable with the arrows like a result; ↩ or a click unfolds them.
-private struct WeakerRow: View {
-    let count: Int
-    let expanded: Bool
-    let selected: Bool
-
-    var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "chevron.right")
-                .font(.system(size: 9.5, weight: .bold))
-                .rotationEffect(.degrees(expanded ? 90 : 0))
-            Text(expanded ? "Weaker matches" : "\(count) weaker \(count == 1 ? "match" : "matches")")
-                .font(.system(size: 11.5, weight: .medium))
-            Spacer()
+    /// `downloadLine`, in Spanish.
+    private var spanishDownloadLine: String? {
+        switch download.phase {
+        case .ready: nil
+        case .downloading: "Descargando el modelo · \(Int(download.fraction * 100)) %"
+        case .verifying: "Comprobando la descarga del modelo…"
+        case .retrying: "Descarga del modelo: esperando a la red"
+        case .failed: "⚠︎ La descarga del modelo se ha detenido"
+        case .needed: status.pending > 0 ? "El modelo aún no está descargado" : nil
         }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 10)
-        .frame(height: 26)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(selected ? Color.accentColor.opacity(0.24) : Color.clear))
-        .contentShape(Rectangle())
-        .accessibilityAddTraits(.isButton)
     }
-}
 
-private struct WeakerExplainer: View {
-    let count: Int
-    let expanded: Bool
-
-    var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "line.3.horizontal.decrease.circle")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text(expanded ? "Weaker matches" : "\(count) weaker \(count == 1 ? "match" : "matches")")
-                .font(.system(size: 14, weight: .semibold))
-            Text("They match much less well than the results above. Press Return to "
-                 + (expanded ? "fold them away." : "show them."))
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 260)
+    /// Why the first pass waits (`PowerPolicy.backfillBlocker`), in Spanish.
+    private static func spanishWaiting(_ reason: String) -> String {
+        switch reason {
+        case "Low Power Mode": "modo de bajo consumo"
+        case "Mac is warm": "el Mac está caliente"
+        case "on battery": "con batería"
+        default: reason
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private static func number(_ value: Int) -> String { value.formatted(.number.locale(ResultRow.spanish)) }
+
+    private static func percent(_ done: Int, of total: Int) -> Int {
+        total > 0 ? Int((Double(done) / Double(total) * 100).rounded(.down)) : 0
     }
 }
 
@@ -360,6 +308,8 @@ struct SearchField: NSViewRepresentable {
     @Binding var text: String
     var fontSize: CGFloat = 22
     let placeholder: String
+    /// What VoiceOver calls the field.
+    var label = "Search"
     var onMake: (NSTextField) -> Void = { _ in }
     /// The field got the cursor (true) or lost it (false).
     var onFocus: (Bool) -> Void = { _ in }
@@ -376,7 +326,7 @@ struct SearchField: NSViewRepresentable {
         field.cell?.isScrollable = true
         field.cell?.wraps = false
         field.delegate = context.coordinator
-        field.setAccessibilityLabel("Search")
+        field.setAccessibilityLabel(label)
         onMake(field)
         return field
     }
@@ -426,6 +376,8 @@ struct FileDragArea: NSViewRepresentable {
     let url: URL
     /// "Open at 0:06": what double-click and the menu's first item do.
     var openTitle = "Open"
+    /// The menu in Spanish (the search panel's language).
+    var spanish = false
     let onClick: () -> Void
     let onOpen: () -> Void
 
@@ -434,6 +386,7 @@ struct FileDragArea: NSViewRepresentable {
     func updateNSView(_ view: FileDragView, context: Context) {
         view.url = url
         view.openTitle = openTitle
+        view.spanish = spanish
         view.onClick = onClick
         view.onOpen = onOpen
     }
@@ -442,6 +395,7 @@ struct FileDragArea: NSViewRepresentable {
 final class FileDragView: NSView, NSDraggingSource {
     var url: URL?
     var openTitle = "Open"
+    var spanish = false
     var onClick: () -> Void = {}
     var onOpen: () -> Void = {}
     private var mouseDownEvent: NSEvent?
@@ -483,13 +437,13 @@ final class FileDragView: NSView, NSDraggingSource {
         onClick()
         let menu = NSMenu()
         menu.addItem(ActionMenuItem(openTitle) { [onOpen] in onOpen() })
-        menu.addItem(ActionMenuItem("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) })
+        menu.addItem(ActionMenuItem(spanish ? "Mostrar en el Finder" : "Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) })
         menu.addItem(.separator())
-        menu.addItem(ActionMenuItem("Copy") {
+        menu.addItem(ActionMenuItem(spanish ? "Copiar" : "Copy") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.writeObjects([url as NSURL])
         })
-        menu.addItem(ActionMenuItem("Copy Path") {
+        menu.addItem(ActionMenuItem(spanish ? "Copiar ruta" : "Copy Path") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(url.path, forType: .string)
         })
@@ -507,8 +461,11 @@ final class FileDragView: NSView, NSDraggingSource {
 private struct CodeHint: View {
     let controller: SearchPanelController
 
-    static let examples = ["code: retry a request with backoff", "code: where the settings are saved",
-                           "code: parse the command line options"]
+    static let examples = AppSettings.demo
+        ? ["code: crear un agente con una herramienta", "code: desplegar el modelo con Bicep",
+           "code: evaluar las respuestas del agente"]
+        : ["code: reintentar una petición con espera", "code: dónde se guardan los ajustes",
+           "code: leer las opciones de la línea de comandos"]
 
     var body: some View {
         VStack(spacing: 10) {
@@ -516,17 +473,17 @@ private struct CodeHint: View {
                 .font(.system(size: 26, weight: .medium))
                 .foregroundStyle(Brand.gradient)
             if controller.phase == .codeOff {
-                Text("Code search is off").font(.system(size: 15, weight: .semibold))
-                Text("DigUp can find code by what it does, in the folders you pick. Code gets an index of its own "
-                     + "and never shows up in other searches.")
+                Text("La búsqueda de código está apagada").font(.system(size: 15, weight: .semibold))
+                Text("Biblo puede encontrar código por lo que hace, en las carpetas que elijas. El código tiene su "
+                     + "propio índice y nunca aparece en otras búsquedas.")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
-                Button("Choose Code Folders…") { controller.setUpCodeSearch() }
+                    .frame(maxWidth: 440)
+                Button("Elegir carpetas de código…") { controller.setUpCodeSearch() }
                     .padding(.top, 4)
             } else {
-                Text("Search your code").font(.system(size: 15, weight: .semibold))
-                Text("Say what the code does, or type a name that's in it.").foregroundStyle(.secondary)
+                Text("Busca en tu código").font(.system(size: 15, weight: .semibold))
+                Text("Di qué hace el código, o escribe un nombre que aparezca en él.").foregroundStyle(.secondary)
                 VStack(spacing: 6) {
                     ForEach(Self.examples, id: \.self) { example in
                         Button { controller.tryExample(example) } label: {
@@ -534,7 +491,7 @@ private struct CodeHint: View {
                                 .font(.system(size: 12, design: .monospaced))
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 4)
-                                .background(Capsule().fill(Brand.leaf.opacity(0.12)))
+                                .background(Capsule().fill(Color.primary.opacity(0.06)))
                         }
                         .buttonStyle(.plain)
                     }
